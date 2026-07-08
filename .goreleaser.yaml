@@ -59,5 +59,14 @@ homebrew_casks:
     homepage: https://github.com/iwen-conf/apifox-mcp
     description: "Go CLI for AI-authored Apifox/OpenAPI documentation"
     license: MIT
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr",
+              args: ["-d", "com.apple.quarantine", "#{staged_path}/apifox-mcp"],
+              sudo: false,
+              must_succeed: false
+          end
     binaries:
       - apifox-mcp

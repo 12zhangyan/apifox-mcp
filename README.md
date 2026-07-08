@@ -22,6 +22,7 @@ Homebrew:
 
 ```bash
 brew tap iwen-conf/tap
+brew trust iwen-conf/tap
 brew install --cask apifox-mcp
 apifox-mcp --version
 ```
