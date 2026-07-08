@@ -1,5 +1,5 @@
 [project]
-name = "apifox-mcp"
+name = "apifox-cli"
 version = "0.1.0"
 description = "A Go CLI and AI Skill for writing Apifox/OpenAPI documentation"
 readme = "README.md"

@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Apifox](https://img.shields.io/badge/Apifox-OpenAPI-orange)](https://apifox.com/)
 
-`apifox-mcp` is now a Go command line tool plus an AI Skill for writing Apifox/OpenAPI documentation. The CLI replaces the old tool-call workflow: agents and scripts should call `apifox-mcp` commands directly.
+`apifox-cli` is now a Go command line tool plus an AI Skill for writing Apifox/OpenAPI documentation. The CLI replaces the old tool-call workflow: agents and scripts should call `apifox-cli` commands directly.
 
 The main use case is not importing an existing OpenAPI file. The expected workflow is:
 
@@ -23,22 +23,22 @@ Homebrew:
 ```bash
 brew tap iwen-conf/tap
 brew trust iwen-conf/tap
-brew install --cask apifox-mcp
-apifox-mcp --version
+brew install --cask apifox-cli
+apifox-cli --version
 ```
 
 From source:
 
 ```bash
-go build -o ./bin/apifox-mcp ./cmd/apifox-mcp
-./bin/apifox-mcp --help
+go build -o ./bin/apifox-cli ./cmd/apifox-cli
+./bin/apifox-cli --help
 ```
 
 Or install from the checkout:
 
 ```bash
-go install ./cmd/apifox-mcp
-apifox-mcp --help
+go install ./cmd/apifox-cli
+apifox-cli --help
 ```
 
 ## Configure
@@ -49,7 +49,7 @@ Set credentials through environment variables, or pass them before the subcomman
 export APIFOX_TOKEN="your-token"
 export APIFOX_PROJECT_ID="your-project-id"
 
-apifox-mcp config check
+apifox-cli config check
 ```
 
 Use `--base-url` only when your Apifox deployment is not `https://api.apifox.com`.
@@ -59,63 +59,63 @@ Use `--base-url` only when your Apifox deployment is not `https://api.apifox.com
 Project and discovery:
 
 ```bash
-apifox-mcp config check
-apifox-mcp versions
-apifox-mcp api list --limit 20
-apifox-mcp api get --method GET --path /orders
-apifox-mcp schema list --limit 20
-apifox-mcp schema get Order
-apifox-mcp tag list
-apifox-mcp folder list
+apifox-cli config check
+apifox-cli versions
+apifox-cli api list --limit 20
+apifox-cli api get --method GET --path /orders
+apifox-cli schema list --limit 20
+apifox-cli schema get Order
+apifox-cli tag list
+apifox-cli folder list
 ```
 
 Endpoint documentation:
 
 ```bash
-apifox-mcp endpoint-template --method POST -o .apifox-endpoint.json
-apifox-mcp validate-endpoint --file .apifox-endpoint.json
-apifox-mcp api upsert --file .apifox-endpoint.json --dry-run
-apifox-mcp api upsert --file .apifox-endpoint.json
+apifox-cli endpoint-template --method POST -o .apifox-endpoint.json
+apifox-cli validate-endpoint --file .apifox-endpoint.json
+apifox-cli api upsert --file .apifox-endpoint.json --dry-run
+apifox-cli api upsert --file .apifox-endpoint.json
 ```
 
 Batch AI documentation:
 
 ```bash
-apifox-mcp docs-template -o .apifox-docs.json
-apifox-mcp validate-docs --file .apifox-docs.json
-apifox-mcp apply-docs --file .apifox-docs.json --dry-run
-apifox-mcp apply-docs --file .apifox-docs.json
+apifox-cli docs-template -o .apifox-docs.json
+apifox-cli validate-docs --file .apifox-docs.json
+apifox-cli apply-docs --file .apifox-docs.json --dry-run
+apifox-cli apply-docs --file .apifox-docs.json
 ```
 
 CRUD and schema documentation:
 
 ```bash
-apifox-mcp crud-template -o .apifox-crud.json
-apifox-mcp validate-crud --file .apifox-crud.json
-apifox-mcp generate-crud --file .apifox-crud.json --dry-run
-apifox-mcp generate-crud --file .apifox-crud.json
+apifox-cli crud-template -o .apifox-crud.json
+apifox-cli validate-crud --file .apifox-crud.json
+apifox-cli generate-crud --file .apifox-crud.json --dry-run
+apifox-cli generate-crud --file .apifox-crud.json
 
-apifox-mcp schema template -o .apifox-schema.json
-apifox-mcp schema create --file .apifox-schema.json --dry-run
-apifox-mcp schema create --file .apifox-schema.json
+apifox-cli schema template -o .apifox-schema.json
+apifox-cli schema create --file .apifox-schema.json --dry-run
+apifox-cli schema create --file .apifox-schema.json
 ```
 
 Maintenance and audits:
 
 ```bash
-apifox-mcp tag apis --tag 订单管理
-apifox-mcp tag add --method GET --path /orders --tag 订单管理 --tag 核心接口
-apifox-mcp audit responses --method POST --path /orders
-apifox-mcp audit all-responses --tag 订单管理
-apifox-mcp audit path-naming --style kebab-case
-apifox-mcp audit consistency
+apifox-cli tag apis --tag 订单管理
+apifox-cli tag add --method GET --path /orders --tag 订单管理 --tag 核心接口
+apifox-cli audit responses --method POST --path /orders
+apifox-cli audit all-responses --tag 订单管理
+apifox-cli audit path-naming --style kebab-case
+apifox-cli audit consistency
 ```
 
 Raw Apifox `/v1` fallback for official endpoints that are not wrapped yet:
 
 ```bash
-apifox-mcp request GET /versions --json
-apifox-mcp request POST /projects/123/export-openapi --data-file .apifox-export-payload.json
+apifox-cli request GET /versions --json
+apifox-cli request POST /projects/123/export-openapi --data-file .apifox-export-payload.json
 ```
 
 ## AI Skill
@@ -169,27 +169,27 @@ Example `.apifox-endpoint.json`:
 OpenAPI import/export remains available for migration, backup, and compatibility work. It is not the primary AI authoring path.
 
 ```bash
-apifox-mcp export-openapi --format JSON --oas-version 3.1 -o .apifox-openapi.json
-apifox-mcp export-openapi --scope tags --tag 订单管理 --format YAML -o .apifox-orders.yaml
-apifox-mcp import-openapi --file .apifox-openapi.json --endpoint-overwrite-behavior AUTO_MERGE
-apifox-mcp import-openapi --url https://example.com/openapi.yaml --prepend-base-path
-apifox-mcp import-postman --file .postman-collection.json
+apifox-cli export-openapi --format JSON --oas-version 3.1 -o .apifox-openapi.json
+apifox-cli export-openapi --scope tags --tag 订单管理 --format YAML -o .apifox-orders.yaml
+apifox-cli import-openapi --file .apifox-openapi.json --endpoint-overwrite-behavior AUTO_MERGE
+apifox-cli import-openapi --url https://example.com/openapi.yaml --prepend-base-path
+apifox-cli import-postman --file .postman-collection.json
 ```
 
 Preview mutating import/export requests before calling Apifox:
 
 ```bash
-apifox-mcp export-openapi --scope tags --tag 订单管理 --dry-run
-apifox-mcp import-openapi --file .apifox-openapi.json --print-payload
+apifox-cli export-openapi --scope tags --tag 订单管理 --dry-run
+apifox-cli import-openapi --file .apifox-openapi.json --print-payload
 ```
 
 ## Develop
 
 ```bash
 go test ./...
-go build -o /tmp/apifox-mcp ./cmd/apifox-mcp
-/tmp/apifox-mcp --help
-/tmp/apifox-mcp docs-template | /tmp/apifox-mcp validate-docs --file -
+go build -o /tmp/apifox-cli ./cmd/apifox-cli
+/tmp/apifox-cli --help
+/tmp/apifox-cli docs-template | /tmp/apifox-cli validate-docs --file -
 ```
 
 Release uses GoReleaser and the Homebrew cask in `iwen-conf/homebrew-tap`.

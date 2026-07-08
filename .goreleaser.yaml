@@ -1,15 +1,15 @@
 version: 2
 
-project_name: apifox-mcp
+project_name: apifox-cli
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: apifox-mcp
-    main: ./cmd/apifox-mcp
-    binary: apifox-mcp
+  - id: apifox-cli
+    main: ./cmd/apifox-cli
+    binary: apifox-cli
     env:
       - CGO_ENABLED=0
     goos:
@@ -19,12 +19,12 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
+      - -s -w -X github.com/iwen-conf/apifox-mcp/internal/apifoxcli.version={{ .Version }} -X github.com/iwen-conf/apifox-mcp/internal/apifoxcli.commit={{ .Commit }} -X github.com/iwen-conf/apifox-mcp/internal/apifoxcli.date={{ .Date }}
 
 archives:
-  - id: apifox-mcp
+  - id: apifox-cli
     ids:
-      - apifox-mcp
+      - apifox-cli
     formats:
       - tar.gz
     name_template: >-
@@ -47,9 +47,9 @@ release:
     name: apifox-mcp
 
 homebrew_casks:
-  - name: apifox-mcp
+  - name: apifox-cli
     ids:
-      - apifox-mcp
+      - apifox-cli
     repository:
       owner: iwen-conf
       name: homebrew-tap
@@ -64,9 +64,9 @@ homebrew_casks:
         install: |
           if OS.mac?
             system_command "/usr/bin/xattr",
-              args: ["-d", "com.apple.quarantine", "#{staged_path}/apifox-mcp"],
+              args: ["-d", "com.apple.quarantine", "#{staged_path}/apifox-cli"],
               sudo: false,
               must_succeed: false
           end
     binaries:
-      - apifox-mcp
+      - apifox-cli
