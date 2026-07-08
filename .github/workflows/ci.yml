@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test Go CLI
+        run: go test ./...
+
+      - name: Build Go CLI
+        run: go build -o /tmp/apifox-mcp ./cmd/apifox-mcp
+
+      - name: Smoke test Go CLI
+        run: |
+          /tmp/apifox-mcp --help
+          /tmp/apifox-mcp --version
+          /tmp/apifox-mcp docs-template | /tmp/apifox-mcp validate-docs --file -

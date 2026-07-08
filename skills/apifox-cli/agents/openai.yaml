@@ -1,0 +1,4 @@
+interface:
+  display_name: "Apifox Go CLI"
+  short_description: "Write Apifox/OpenAPI docs with the Go CLI"
+  default_prompt: "Use $apifox-cli to read my code, run the Go CLI, write .apifox-docs.json, validate it, dry-run it, and apply it to Apifox."

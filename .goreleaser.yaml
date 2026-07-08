@@ -1,0 +1,63 @@
+version: 2
+
+project_name: apifox-mcp
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: apifox-mcp
+    main: ./cmd/apifox-mcp
+    binary: apifox-mcp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
+
+archives:
+  - id: apifox-mcp
+    ids:
+      - apifox-mcp
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+release:
+  github:
+    owner: iwen-conf
+    name: apifox-mcp
+
+homebrew_casks:
+  - name: apifox-mcp
+    ids:
+      - apifox-mcp
+    repository:
+      owner: iwen-conf
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/iwen-conf/apifox-mcp
+    description: "Go CLI for AI-authored Apifox/OpenAPI documentation"
+    license: MIT
+    binaries:
+      - apifox-mcp
