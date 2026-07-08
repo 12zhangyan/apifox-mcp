@@ -2,7 +2,7 @@
 
 ## Project Direction
 
-This branch turns `apifox-mcp` into a Python MCP server plus a first-class Go CLI and Codex Skill for AI-authored Apifox/OpenAPI documentation.
+This branch turns `apifox-mcp` into a first-class Go CLI plus Codex Skill for AI-authored Apifox/OpenAPI documentation. The CLI replaces the old tool-call workflow; agents should call command-line subcommands directly.
 
 The primary workflow is:
 
@@ -10,7 +10,7 @@ The primary workflow is:
 2. Write structured hidden JSON files such as `.apifox-docs.json`, `.apifox-endpoint.json`, or `.apifox-crud.json`.
 3. Run local validation with `apifox-mcp validate-docs`, `validate-endpoint`, or `validate-crud`.
 4. Run `--dry-run` before any write.
-5. Apply the docs to Apifox with the Go CLI: `apifox-mcp apply-docs`, `upsert-endpoint`, or `generate-crud`.
+5. Apply the docs to Apifox with the Go CLI: `apifox-mcp apply-docs`, `api upsert`, `schema create`, or `generate-crud`.
 
 Official Apifox OpenAPI import/export commands remain available for migration, backup, and compatibility tasks. They are not the main AI documentation authoring path.
 
@@ -25,7 +25,7 @@ For Go projects, do not make Swagger marker comments the primary API documentati
 - Do not hide validation or API errors behind fallback logic.
 - Prefer hidden JSON files for AI-generated request/spec data.
 - Keep CLI commands composable and scriptable.
-- Use official Apifox OpenAPI import/export endpoints for real writes. Do not reintroduce a Python CLI wrapper for the main CLI path.
+- Use official Apifox OpenAPI import/export endpoints for real writes. Do not reintroduce a Python CLI wrapper or MCP tool-call path for the main CLI workflow.
 
 ## Debugging And Observability
 

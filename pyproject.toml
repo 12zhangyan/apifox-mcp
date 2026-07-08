@@ -1,14 +1,14 @@
 [project]
 name = "apifox-mcp"
 version = "0.1.0"
-description = "A Model Context Protocol (MCP) server for managing Apifox projects through LLMs"
+description = "A Go CLI and AI Skill for writing Apifox/OpenAPI documentation"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-    { name = "Apifox MCP Contributors" }
+    { name = "Apifox CLI Contributors" }
 ]
-keywords = ["mcp", "apifox", "api", "model-context-protocol"]
+keywords = ["apifox", "api", "openapi", "cli"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

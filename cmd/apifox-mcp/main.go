@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
@@ -29,6 +28,7 @@ var (
 	httpMethods      = set("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS")
 	requestBodyTypes = set("none", "json", "form-data", "x-www-form-urlencoded", "raw", "binary")
 	crudOperations   = set("list", "get", "create", "update", "delete")
+	schemaTypes      = set("object", "array", "string", "integer", "number", "boolean")
 
 	endpointFields = set(
 		"title", "path", "method", "description", "response_schema", "response_example",
@@ -44,6 +44,9 @@ var (
 	crudFields = set(
 		"resource_name", "resource_name_cn", "base_path", "model_schema", "id_field",
 		"id_type", "operations", "tags", "folder_id", "description_prefix",
+	)
+	schemaFields = set(
+		"name", "new_name", "schema_type", "type", "description", "properties", "required", "items", "folder_id",
 	)
 	docsFields          = set("endpoints", "crud")
 	docsEndpointActions = set("create", "update", "upsert")
@@ -68,14 +71,6 @@ type Config struct {
 type App struct {
 	Config Config
 	Client *http.Client
-}
-
-type ToolSpec struct {
-	Name      string `json:"name"`
-	Category  string `json:"category"`
-	Signature string `json:"signature"`
-	Summary   string `json:"summary"`
-	Doc       string `json:"doc,omitempty"`
 }
 
 type commandError struct {
@@ -121,14 +116,18 @@ func run(args []string) error {
 	command := rest[0]
 	commandArgs := rest[1:]
 	switch command {
-	case "serve":
-		return app.cmdServe(commandArgs)
-	case "list-tools":
-		return app.cmdListTools(commandArgs)
-	case "describe":
-		return app.cmdDescribe(commandArgs)
-	case "call":
-		return app.cmdCall(commandArgs)
+	case "config":
+		return app.cmdConfig(commandArgs)
+	case "api":
+		return app.cmdAPI(commandArgs)
+	case "schema":
+		return app.cmdSchema(commandArgs)
+	case "tag":
+		return app.cmdTag(commandArgs)
+	case "folder":
+		return app.cmdFolder(commandArgs)
+	case "audit":
+		return app.cmdAudit(commandArgs)
 	case "endpoint-template":
 		return app.cmdEndpointTemplate(commandArgs)
 	case "validate-endpoint":
@@ -169,14 +168,32 @@ func run(args []string) error {
 func printHelp() {
 	fmt.Println(`usage: apifox-mcp [--token TOKEN] [--project-id PROJECT_ID] [--base-url BASE_URL] <command> [options]
 
-Go CLI for AI-authored Apifox/OpenAPI documentation.
+CLI for AI-authored Apifox/OpenAPI documentation.
 
 Commands:
   version               Print CLI version
-  serve                 Run the Python MCP stdio server
-  list-tools            List callable high-level operations
-  describe <tool>       Describe one high-level operation
-  call <tool>           Call a high-level operation with JSON args
+  config check          Check Apifox credentials and project connectivity
+  api list              List HTTP endpoints
+  api get               Show one HTTP endpoint
+  api create            Create an endpoint from JSON spec
+  api update            Update an endpoint from JSON spec
+  api upsert            Create or update an endpoint from JSON spec
+  api delete            Explain endpoint deletion support
+  schema list           List schemas
+  schema get            Show one schema
+  schema create         Create a schema from JSON spec
+  schema update         Update a schema from JSON spec
+  schema delete         Explain schema deletion support
+  tag list              List tags
+  tag apis              List endpoints by tag
+  tag add               Replace an endpoint's tags
+  folder list           List folder/tag structure
+  folder create         Explain folder creation support
+  folder delete         Explain folder deletion support
+  audit responses       Check one endpoint's response coverage
+  audit all-responses   Audit response coverage across endpoints
+  audit path-naming     Check path naming style
+  audit consistency     Check response consistency
   docs-template         Print an AI-authorable batch docs JSON template
   validate-docs         Validate a batch docs JSON spec locally
   apply-docs            Apply endpoint and CRUD docs to Apifox
@@ -945,6 +962,66 @@ func validateCRUDSpec(spec map[string]any) []string {
 	return errors
 }
 
+func schemaType(spec map[string]any) string {
+	value := toString(spec["schema_type"])
+	if value == "" {
+		value = toString(spec["type"])
+	}
+	if value == "" {
+		value = "object"
+	}
+	return value
+}
+
+func validateSchemaSpec(spec map[string]any) []string {
+	var errors []string
+	if unknown := unknownFields(spec, schemaFields); len(unknown) > 0 {
+		errors = append(errors, "unknown fields: "+strings.Join(unknown, ", "))
+	}
+	if isEmpty(spec["name"]) {
+		errors = append(errors, "name is required")
+	}
+	typ := schemaType(spec)
+	if !schemaTypes[typ] {
+		errors = append(errors, "schema_type must be one of: "+strings.Join(sortedKeys(schemaTypes), ", "))
+	}
+	if strings.TrimSpace(toString(spec["description"])) == "" {
+		errors = append(errors, "description is required")
+	}
+	if raw, exists := spec["properties"]; exists && raw != nil {
+		properties, ok := toMap(raw)
+		if !ok {
+			errors = append(errors, "properties must be an object")
+		} else if typ != "object" {
+			errors = append(errors, "properties is only valid for object schemas")
+		} else {
+			schema := map[string]any{"type": "object", "properties": properties}
+			if missing := checkSchemaDescriptions(schema, ""); len(missing) > 0 {
+				errors = append(errors, "properties fields missing description: "+strings.Join(missing, ", "))
+			}
+		}
+	}
+	if typ == "object" && spec["properties"] == nil {
+		errors = append(errors, "object schemas require properties")
+	}
+	if raw, exists := spec["required"]; exists && raw != nil {
+		if _, ok := toSlice(raw); !ok {
+			errors = append(errors, "required must be a list")
+		}
+	}
+	if typ == "array" {
+		items, ok := toMap(spec["items"])
+		if !ok {
+			errors = append(errors, "array schemas require items")
+		} else if toString(items["type"]) == "object" {
+			if missing := checkSchemaDescriptions(items, "items"); len(missing) > 0 {
+				errors = append(errors, "items fields missing description: "+strings.Join(missing, ", "))
+			}
+		}
+	}
+	return errors
+}
+
 func stripEndpointAction(item map[string]any) (string, map[string]any) {
 	action := toString(item["action"])
 	if action == "" {
@@ -1166,6 +1243,20 @@ func crudTemplate() map[string]any {
 	}
 }
 
+func schemaTemplate() map[string]any {
+	return map[string]any{
+		"name":        "Order",
+		"schema_type": "object",
+		"description": "订单数据模型",
+		"properties": map[string]any{
+			"id":     map[string]any{"type": "integer", "description": "订单ID"},
+			"status": map[string]any{"type": "string", "description": "订单状态"},
+		},
+		"required":  []any{"id", "status"},
+		"folder_id": 0,
+	}
+}
+
 func docsTemplate() map[string]any {
 	return map[string]any{
 		"endpoints": []any{
@@ -1295,6 +1386,358 @@ func mustValid(errors []string, label string) error {
 	return fail(2, strings.Join(lines, "\n"))
 }
 
+func optInt(opts map[string][]string, key string, def int) (int, error) {
+	value := optString(opts, key, "")
+	if value == "" {
+		return def, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fail(2, "--%s must be an integer: %s", key, value)
+	}
+	return parsed, nil
+}
+
+func optOrPos(opts map[string][]string, key string, pos []string, index int) string {
+	if value := optString(opts, key, ""); value != "" {
+		return value
+	}
+	if index >= 0 && index < len(pos) {
+		return pos[index]
+	}
+	return ""
+}
+
+func printTextResult(result string, opts map[string][]string) error {
+	if optBool(opts, "json") {
+		printJSON(map[string]any{"result": result})
+		return nil
+	}
+	if file := optString(opts, "output", ""); file != "" {
+		if err := writeOutput(file, result+"\n"); err != nil {
+			return err
+		}
+		fmt.Printf("已写入 %s\n", file)
+		return nil
+	}
+	fmt.Println(result)
+	return nil
+}
+
+func (a *App) cmdConfig(args []string) error {
+	if len(args) == 0 {
+		args = []string{"check"}
+	}
+	switch args[0] {
+	case "check":
+		opts, _, err := parseOptions(args[1:], map[string]bool{"output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		result, err := a.checkConfig()
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	case "-h", "--help", "help":
+		fmt.Println("usage: apifox-mcp config check [--json] [-o FILE]")
+		return nil
+	default:
+		return fail(2, "unknown config command %q", args[0])
+	}
+}
+
+func (a *App) cmdAPI(args []string) error {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		fmt.Println(`usage: apifox-mcp api <command> [options]
+
+Commands:
+  list                  List endpoints
+  get                   Show one endpoint
+  create                Create endpoint from --file
+  update                Update endpoint from --file
+  upsert                Create or update endpoint from --file
+  delete                Explain endpoint deletion support`)
+		return nil
+	}
+	switch args[0] {
+	case "list":
+		opts, _, err := parseOptions(args[1:], map[string]bool{"keyword": true, "limit": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		limit, err := optInt(opts, "limit", 50)
+		if err != nil {
+			return err
+		}
+		result, err := a.listAPIEndpoints(optString(opts, "keyword", ""), limit)
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	case "get":
+		opts, pos, err := parseOptions(args[1:], map[string]bool{"path": true, "method": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		method := strings.ToUpper(optOrPos(opts, "method", pos, 0))
+		path := optOrPos(opts, "path", pos, 1)
+		if strings.HasPrefix(method, "/") && path != "" {
+			method, path = strings.ToUpper(path), method
+		}
+		result, err := a.getEndpointDetail(path, method)
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	case "create":
+		return a.cmdWriteEndpoint(args[1:], "create")
+	case "update":
+		return a.cmdWriteEndpoint(args[1:], "update")
+	case "upsert":
+		return a.cmdWriteEndpoint(args[1:], "upsert")
+	case "delete":
+		opts, pos, err := parseOptions(args[1:], map[string]bool{"path": true, "method": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		method := strings.ToUpper(optOrPos(opts, "method", pos, 0))
+		path := optOrPos(opts, "path", pos, 1)
+		if strings.HasPrefix(method, "/") && path != "" {
+			method, path = strings.ToUpper(path), method
+		}
+		result, err := a.deleteEndpoint(path, method, optBool(opts, "confirm"))
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	default:
+		return fail(2, "unknown api command %q", args[0])
+	}
+}
+
+func (a *App) cmdSchema(args []string) error {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		fmt.Println(`usage: apifox-mcp schema <command> [options]
+
+Commands:
+  template              Write a schema JSON template
+  list                  List schemas
+  get                   Show one schema
+  create                Create schema from --file or flags
+  update                Update schema from --file or flags
+  delete                Explain schema deletion support`)
+		return nil
+	}
+	switch args[0] {
+	case "template":
+		opts, _, err := parseOptions(args[1:], map[string]bool{"output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		return writeTemplate(schemaTemplate(), optString(opts, "output", ""))
+	case "list":
+		opts, _, err := parseOptions(args[1:], map[string]bool{"keyword": true, "limit": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		limit, err := optInt(opts, "limit", 50)
+		if err != nil {
+			return err
+		}
+		result, err := a.listSchemas(optString(opts, "keyword", ""), limit)
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	case "get":
+		opts, pos, err := parseOptions(args[1:], map[string]bool{"name": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		result, err := a.getSchemaDetail(optOrPos(opts, "name", pos, 0))
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	case "create":
+		return a.cmdWriteSchema(args[1:], "create")
+	case "update":
+		return a.cmdWriteSchema(args[1:], "update")
+	case "delete":
+		opts, pos, err := parseOptions(args[1:], map[string]bool{"name": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		result, err := a.deleteSchema(optOrPos(opts, "name", pos, 0), optBool(opts, "confirm"))
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	default:
+		return fail(2, "unknown schema command %q", args[0])
+	}
+}
+
+func (a *App) cmdTag(args []string) error {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		fmt.Println(`usage: apifox-mcp tag <command> [options]
+
+Commands:
+  list                  List tags
+  apis                  List endpoints under one tag
+  add                   Replace an endpoint's tags`)
+		return nil
+	}
+	switch args[0] {
+	case "list":
+		opts, _, err := parseOptions(args[1:], map[string]bool{"output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		result, err := a.listTags()
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	case "apis":
+		opts, pos, err := parseOptions(args[1:], map[string]bool{"tag": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		result, err := a.getAPIsByTag(optOrPos(opts, "tag", pos, 0))
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	case "add":
+		opts, pos, err := parseOptions(args[1:], map[string]bool{"path": true, "method": true, "tag": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		method := strings.ToUpper(optOrPos(opts, "method", pos, 0))
+		path := optOrPos(opts, "path", pos, 1)
+		if strings.HasPrefix(method, "/") && path != "" {
+			method, path = strings.ToUpper(path), method
+		}
+		result, err := a.setEndpointTags(path, method, optList(opts, "tag"))
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	default:
+		return fail(2, "unknown tag command %q", args[0])
+	}
+}
+
+func (a *App) cmdFolder(args []string) error {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		fmt.Println(`usage: apifox-mcp folder <command> [options]
+
+Commands:
+  list                  List folder/tag structure
+  create                Explain folder creation support
+  delete                Explain folder deletion support`)
+		return nil
+	}
+	switch args[0] {
+	case "list":
+		opts, _, err := parseOptions(args[1:], map[string]bool{"output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		result, err := a.listFolders()
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	case "create":
+		opts, pos, err := parseOptions(args[1:], map[string]bool{"name": true, "description": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		result, err := a.createFolder(optOrPos(opts, "name", pos, 0), optString(opts, "description", ""))
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	case "delete":
+		opts, pos, err := parseOptions(args[1:], map[string]bool{"name": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		result, err := a.deleteFolder(optOrPos(opts, "name", pos, 0), optBool(opts, "confirm"))
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	default:
+		return fail(2, "unknown folder command %q", args[0])
+	}
+}
+
+func (a *App) cmdAudit(args []string) error {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		fmt.Println(`usage: apifox-mcp audit <command> [options]
+
+Commands:
+  responses             Check one endpoint's response coverage
+  all-responses         Audit response coverage across endpoints
+  path-naming           Check path naming style
+  consistency           Check response consistency`)
+		return nil
+	}
+	switch args[0] {
+	case "responses":
+		opts, pos, err := parseOptions(args[1:], map[string]bool{"path": true, "method": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		method := strings.ToUpper(optOrPos(opts, "method", pos, 0))
+		path := optOrPos(opts, "path", pos, 1)
+		if strings.HasPrefix(method, "/") && path != "" {
+			method, path = strings.ToUpper(path), method
+		}
+		result, err := a.checkAPIResponses(path, method)
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	case "all-responses":
+		opts, _, err := parseOptions(args[1:], map[string]bool{"tag": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		result, err := a.auditAllAPIResponses(optString(opts, "tag", ""), optBool(opts, "show-complete"))
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	case "path-naming":
+		opts, _, err := parseOptions(args[1:], map[string]bool{"style": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		result, err := a.checkPathNaming(optString(opts, "style", "kebab-case"))
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	case "consistency":
+		opts, _, err := parseOptions(args[1:], map[string]bool{"output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		result, err := a.checkResponseConsistency()
+		if err != nil {
+			return err
+		}
+		return printTextResult(result, opts)
+	default:
+		return fail(2, "unknown audit command %q", args[0])
+	}
+}
+
 func (a *App) cmdWriteEndpoint(args []string, action string) error {
 	opts, _, err := parseOptions(args, map[string]bool{"file": true}, nil)
 	if err != nil {
@@ -1312,15 +1755,116 @@ func (a *App) cmdWriteEndpoint(args []string, action string) error {
 	if err := mustValid(validateEndpointSpec(spec, update), "spec"); err != nil {
 		return err
 	}
-	tool := "create_api_endpoint"
-	if action != "create" {
-		tool = "update_api_endpoint"
-	}
 	if optBool(opts, "dry-run") || optBool(opts, "print-payload") {
-		printJSON(map[string]any{"tool": tool, "args": spec})
+		printJSON(map[string]any{"command": "api " + action, "action": action, "spec": spec})
 		return nil
 	}
 	result, err := a.applyEndpoint(spec, action)
+	if err != nil {
+		return err
+	}
+	if optBool(opts, "json") {
+		printJSON(map[string]any{"result": result})
+	} else {
+		fmt.Println(result)
+	}
+	return nil
+}
+
+func schemaSpecFromOptions(opts map[string][]string) (map[string]any, error) {
+	if file := optString(opts, "file", ""); file != "" {
+		return readJSONObject(file, "--file")
+	}
+	spec := map[string]any{}
+	for _, key := range []string{"name", "new-name", "schema-type", "type", "description"} {
+		value := optString(opts, key, "")
+		if value == "" {
+			continue
+		}
+		switch key {
+		case "new-name":
+			spec["new_name"] = value
+		case "schema-type":
+			spec["schema_type"] = value
+		default:
+			spec[key] = value
+		}
+	}
+	if value := optString(opts, "folder-id", ""); value != "" {
+		id, err := strconv.Atoi(value)
+		if err != nil {
+			return nil, fail(2, "--folder-id must be an integer")
+		}
+		spec["folder_id"] = id
+	}
+	if raw := optString(opts, "properties", ""); raw != "" {
+		parsed := parseValue(raw)
+		properties, ok := toMap(parsed)
+		if !ok {
+			return nil, fail(2, "--properties must be a JSON object or @file containing an object")
+		}
+		spec["properties"] = properties
+	}
+	if raw := optString(opts, "items", ""); raw != "" {
+		parsed := parseValue(raw)
+		items, ok := toMap(parsed)
+		if !ok {
+			return nil, fail(2, "--items must be a JSON object or @file containing an object")
+		}
+		spec["items"] = items
+	}
+	if required := optList(opts, "required"); len(required) > 0 {
+		values := make([]any, 0, len(required))
+		for _, value := range required {
+			values = append(values, value)
+		}
+		spec["required"] = values
+	}
+	return spec, nil
+}
+
+func buildJSONSchema(spec map[string]any) map[string]any {
+	schema := map[string]any{
+		"type":        schemaType(spec),
+		"description": toString(spec["description"]),
+	}
+	if properties, ok := toMap(spec["properties"]); ok {
+		schema["properties"] = properties
+	}
+	if required, ok := toSlice(spec["required"]); ok && len(required) > 0 {
+		schema["required"] = required
+	}
+	if items, ok := toMap(spec["items"]); ok {
+		schema["items"] = items
+	}
+	return schema
+}
+
+func (a *App) cmdWriteSchema(args []string, action string) error {
+	valueFlags := map[string]bool{
+		"file": true, "name": true, "new-name": true, "schema-type": true, "type": true,
+		"description": true, "properties": true, "items": true, "required": true, "folder-id": true,
+	}
+	opts, _, err := parseOptions(args, valueFlags, nil)
+	if err != nil {
+		return err
+	}
+	spec, err := schemaSpecFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	if err := mustValid(validateSchemaSpec(spec), "schema spec"); err != nil {
+		return err
+	}
+	command := "schema create"
+	if action == "update" {
+		command = "schema update"
+	}
+	if optBool(opts, "dry-run") || optBool(opts, "print-payload") {
+		printJSON(map[string]any{"command": command, "action": action, "spec": spec})
+		return nil
+	}
+	result, err := a.applySchema(spec, action)
 	if err != nil {
 		return err
 	}
@@ -1349,7 +1893,7 @@ func (a *App) cmdGenerateCRUD(args []string) error {
 		return err
 	}
 	if optBool(opts, "dry-run") || optBool(opts, "print-payload") {
-		printJSON(map[string]any{"tool": "generate_crud_apis", "args": spec})
+		printJSON(map[string]any{"command": "generate-crud", "action": "generate", "spec": spec})
 		return nil
 	}
 	result, err := a.applyCRUD(spec)
@@ -1373,11 +1917,7 @@ func docsOperations(spec map[string]any) []map[string]any {
 				continue
 			}
 			action, endpointSpec := stripEndpointAction(item)
-			tool := "update_api_endpoint"
-			if action == "create" {
-				tool = "create_api_endpoint"
-			}
-			operations = append(operations, map[string]any{"action": action, "tool": tool, "args": endpointSpec})
+			operations = append(operations, map[string]any{"action": action, "kind": "endpoint", "command": "api " + action, "spec": endpointSpec})
 		}
 	}
 	if crudSpecs, ok := toSlice(spec["crud"]); ok {
@@ -1386,7 +1926,7 @@ func docsOperations(spec map[string]any) []map[string]any {
 			if !ok {
 				continue
 			}
-			operations = append(operations, map[string]any{"action": "generate", "tool": "generate_crud_apis", "args": item})
+			operations = append(operations, map[string]any{"action": "generate", "kind": "crud", "command": "generate-crud", "spec": item})
 		}
 	}
 	return operations
@@ -1417,16 +1957,17 @@ func (a *App) cmdApplyDocs(args []string) error {
 	var results []map[string]any
 	for index, operation := range operations {
 		action := toString(operation["action"])
-		tool := toString(operation["tool"])
-		argsMap, _ := toMap(operation["args"])
+		kind := toString(operation["kind"])
+		command := toString(operation["command"])
+		argsMap, _ := toMap(operation["spec"])
 		var result string
 		var applyErr error
-		if tool == "generate_crud_apis" {
+		if kind == "crud" {
 			result, applyErr = a.applyCRUD(argsMap)
 		} else {
 			result, applyErr = a.applyEndpoint(argsMap, action)
 		}
-		item := map[string]any{"index": index + 1, "action": action, "tool": tool, "result": result}
+		item := map[string]any{"index": index + 1, "action": action, "kind": kind, "command": command, "result": result}
 		results = append(results, item)
 		if applyErr != nil {
 			item["error"] = applyErr.Error()
@@ -1436,7 +1977,7 @@ func (a *App) cmdApplyDocs(args []string) error {
 			return applyErr
 		}
 		if !optBool(opts, "json") {
-			fmt.Printf("[%d/%d] %s\n%s\n", index+1, len(operations), tool, result)
+			fmt.Printf("[%d/%d] %s\n%s\n", index+1, len(operations), command, result)
 		}
 	}
 	if optBool(opts, "json") {
@@ -1680,6 +2221,10 @@ func defaultString(value string, def string) string {
 }
 
 func (a *App) importOpenAPI(openapi map[string]any, endpointBehavior string, schemaBehavior string, folderID int) (any, error) {
+	return a.importOpenAPIWithFolders(openapi, endpointBehavior, schemaBehavior, folderID, 0)
+}
+
+func (a *App) importOpenAPIWithFolders(openapi map[string]any, endpointBehavior string, schemaBehavior string, endpointFolderID int, schemaFolderID int) (any, error) {
 	if err := a.requireConfig(); err != nil {
 		return nil, err
 	}
@@ -1690,8 +2235,8 @@ func (a *App) importOpenAPI(openapi map[string]any, endpointBehavior string, sch
 	payload := map[string]any{
 		"input": input,
 		"options": map[string]any{
-			"targetEndpointFolderId":    folderID,
-			"targetSchemaFolderId":      0,
+			"targetEndpointFolderId":    endpointFolderID,
+			"targetSchemaFolderId":      schemaFolderID,
 			"endpointOverwriteBehavior": endpointBehavior,
 			"schemaOverwriteBehavior":   schemaBehavior,
 		},
@@ -1735,6 +2280,36 @@ func (a *App) applyEndpoint(spec map[string]any, action string) (string, error) 
 		finalMethod = strings.ToUpper(toString(spec["new_method"]))
 	}
 	return fmt.Sprintf("接口写入成功\n\n名称: %s\n路径: %s %s\n创建: %d\n更新: %d", toString(spec["title"]), finalMethod, finalPath, counters["endpointCreated"], counters["endpointUpdated"]), nil
+}
+
+func (a *App) applySchema(spec map[string]any, action string) (string, error) {
+	if err := a.requireConfig(); err != nil {
+		return "", err
+	}
+	name := toString(spec["name"])
+	finalName := defaultString(toString(spec["new_name"]), name)
+	openapi := map[string]any{
+		"openapi": "3.0.0",
+		"info":    map[string]any{"title": "Schema: " + finalName, "version": "1.0.0"},
+		"paths":   map[string]any{},
+		"components": map[string]any{
+			"schemas": map[string]any{finalName: buildJSONSchema(spec)},
+		},
+	}
+	behavior := "CREATE_NEW"
+	if action == "update" {
+		behavior = "OVERWRITE_EXISTING"
+	}
+	result, err := a.importOpenAPIWithFolders(openapi, "OVERWRITE_EXISTING", behavior, 0, toInt(spec["folder_id"], 0))
+	if err != nil {
+		return "", err
+	}
+	counters := importCounters(result)
+	actionName := "创建"
+	if action == "update" {
+		actionName = "更新"
+	}
+	return fmt.Sprintf("数据模型%s成功\n\n名称: %s\n类型: %s\n创建: %d\n更新: %d", actionName, finalName, schemaType(spec), counters["schemaCreated"], counters["schemaUpdated"]), nil
 }
 
 func importCounters(result any) map[string]int {
@@ -2374,180 +2949,6 @@ func (a *App) cmdRequest(args []string) error {
 	return nil
 }
 
-func (a *App) cmdServe(args []string) error {
-	python := os.Getenv("APIFOX_MCP_PYTHON")
-	if python == "" {
-		python = "python"
-	}
-	cmd := exec.Command(python, "-m", "apifox_mcp.main")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	cmd.Env = os.Environ()
-	return cmd.Run()
-}
-
-func toolSpecs() []ToolSpec {
-	return []ToolSpec{
-		{"check_apifox_config", "config", "() -> string", "检查 Apifox 配置状态。", "验证 APIFOX_TOKEN、APIFOX_PROJECT_ID，并尝试导出项目 OpenAPI 以确认连接。"},
-		{"list_api_endpoints", "api", "(keyword?: string, limit?: int) -> string", "列出 Apifox 项目中的 HTTP 接口。", "通过官方 export-openapi API 读取接口列表。"},
-		{"get_api_endpoint_detail", "api", "(path: string, method: string) -> string", "获取 HTTP 接口的详细信息。", ""},
-		{"create_api_endpoint", "api", "(endpoint spec JSON) -> string", "创建 Apifox HTTP 接口。", "输入字段与 .apifox-endpoint.json 一致。"},
-		{"update_api_endpoint", "api", "(endpoint spec JSON) -> string", "更新 Apifox HTTP 接口。", "输入字段与 .apifox-endpoint.json 一致，允许 new_path 和 new_method。"},
-		{"delete_api_endpoint", "api", "(path: string, method: string, confirm?: bool) -> string", "提示删除接口。", "官方公开 API 暂不支持直接删除接口。"},
-		{"list_schemas", "schema", "(keyword?: string, limit?: int) -> string", "列出数据模型。", ""},
-		{"get_schema_detail", "schema", "(name: string) -> string", "获取数据模型详情。", ""},
-		{"list_tags", "tag", "() -> string", "列出标签及接口数量。", ""},
-		{"get_apis_by_tag", "tag", "(tag: string) -> string", "获取指定标签下的接口。", ""},
-		{"list_folders", "folder", "() -> string", "列出目录/标签。", ""},
-		{"generate_crud_apis", "crud", "(crud spec JSON) -> string", "根据资源模型生成 CRUD 接口。", "输入字段与 .apifox-crud.json 一致。"},
-		{"check_api_responses", "audit", "(path: string, method: string) -> string", "检查单个 API 响应完整性。", ""},
-		{"audit_all_api_responses", "audit", "(tag?: string, show_complete?: bool) -> string", "审计所有 API 响应完整性。", ""},
-		{"check_path_naming_convention", "validation", "(style?: string) -> string", "检查路径命名规范。", ""},
-		{"check_response_consistency", "validation", "() -> string", "检查响应格式一致性。", ""},
-	}
-}
-
-func (a *App) cmdListTools(args []string) error {
-	opts, _, err := parseOptions(args, nil, nil)
-	if err != nil {
-		return err
-	}
-	specs := toolSpecs()
-	if optBool(opts, "json") {
-		printJSON(specs)
-		return nil
-	}
-	current := ""
-	for _, spec := range specs {
-		if spec.Category != current {
-			current = spec.Category
-			fmt.Printf("\n%s:\n", current)
-		}
-		fmt.Printf("  %s%s\n", spec.Name, spec.Signature)
-		if spec.Summary != "" {
-			fmt.Printf("    %s\n", spec.Summary)
-		}
-	}
-	return nil
-}
-
-func (a *App) cmdDescribe(args []string) error {
-	opts, pos, err := parseOptions(args, nil, nil)
-	if err != nil {
-		return err
-	}
-	if len(pos) != 1 {
-		return fail(2, "describe requires one tool name")
-	}
-	for _, spec := range toolSpecs() {
-		if spec.Name == pos[0] {
-			if optBool(opts, "json") {
-				printJSON(spec)
-			} else {
-				fmt.Printf("%s%s\n\n%s\n", spec.Name, spec.Signature, defaultString(spec.Doc, spec.Summary))
-			}
-			return nil
-		}
-	}
-	return fail(2, "unknown tool %q", pos[0])
-}
-
-func (a *App) cmdCall(args []string) error {
-	valueFlags := map[string]bool{"args": true, "args-file": true, "param": true}
-	opts, pos, err := parseOptions(args, valueFlags, nil)
-	if err != nil {
-		return err
-	}
-	if len(pos) != 1 {
-		return fail(2, "call requires one tool name")
-	}
-	payload := map[string]any{}
-	if file := optString(opts, "args-file", ""); file != "" {
-		obj, err := readJSONObject(file, "--args-file")
-		if err != nil {
-			return err
-		}
-		for key, value := range obj {
-			payload[key] = value
-		}
-	}
-	if raw := optString(opts, "args", ""); raw != "" {
-		obj, err := parseJSONObject(raw, "--args")
-		if err != nil {
-			return err
-		}
-		for key, value := range obj {
-			payload[key] = value
-		}
-	}
-	for _, item := range opts["param"] {
-		key, value, ok := strings.Cut(item, "=")
-		if !ok || key == "" {
-			return fail(2, "--param must use key=value form: %s", item)
-		}
-		payload[key] = parseValue(value)
-	}
-	result, err := a.callTool(pos[0], payload)
-	if err != nil {
-		return err
-	}
-	if optBool(opts, "json") {
-		printJSON(map[string]any{"tool": pos[0], "args": payload, "result": result})
-	} else {
-		fmt.Println(result)
-	}
-	return nil
-}
-
-func (a *App) callTool(name string, args map[string]any) (string, error) {
-	switch name {
-	case "check_apifox_config":
-		return a.checkConfig()
-	case "list_api_endpoints":
-		return a.listAPIEndpoints(toString(args["keyword"]), toInt(args["limit"], 50))
-	case "get_api_endpoint_detail":
-		return a.getEndpointDetail(toString(args["path"]), toString(args["method"]))
-	case "create_api_endpoint":
-		if err := mustValid(validateEndpointSpec(args, false), "spec"); err != nil {
-			return "", err
-		}
-		return a.applyEndpoint(args, "create")
-	case "update_api_endpoint":
-		if err := mustValid(validateEndpointSpec(args, true), "spec"); err != nil {
-			return "", err
-		}
-		return a.applyEndpoint(args, "upsert")
-	case "delete_api_endpoint":
-		return "公开 API 暂不支持直接删除接口，请在 Apifox 客户端中手动删除: " + strings.ToUpper(toString(args["method"])) + " " + toString(args["path"]), nil
-	case "list_schemas":
-		return a.listSchemas(toString(args["keyword"]), toInt(args["limit"], 50))
-	case "get_schema_detail":
-		return a.getSchemaDetail(toString(args["name"]))
-	case "list_tags":
-		return a.listTags()
-	case "get_apis_by_tag":
-		return a.getAPIsByTag(toString(args["tag"]))
-	case "list_folders":
-		return a.listFolders()
-	case "generate_crud_apis":
-		if err := mustValid(validateCRUDSpec(args), "spec"); err != nil {
-			return "", err
-		}
-		return a.applyCRUD(args)
-	case "check_api_responses":
-		return a.checkAPIResponses(toString(args["path"]), toString(args["method"]))
-	case "audit_all_api_responses":
-		return a.auditAllAPIResponses(toString(args["tag"]), toBool(args["show_complete"], false))
-	case "check_path_naming_convention":
-		return a.checkPathNaming(defaultString(toString(args["style"]), "kebab-case"))
-	case "check_response_consistency":
-		return a.checkResponseConsistency()
-	default:
-		return "", fail(2, "unknown tool %q", name)
-	}
-}
-
 func (a *App) checkConfig() (string, error) {
 	lines := []string{"Apifox 配置检查", strings.Repeat("=", 40)}
 	if a.Config.Token != "" {
@@ -2846,6 +3247,97 @@ func (a *App) getAPIsByTag(tag string) (string, error) {
 
 func (a *App) listFolders() (string, error) {
 	return a.listTags()
+}
+
+func (a *App) deleteEndpoint(path string, method string, confirm bool) (string, error) {
+	if path == "" || method == "" {
+		return "", fail(2, "path and method are required")
+	}
+	method = strings.ToUpper(method)
+	if !httpMethods[method] {
+		return "", fail(2, "method must be one of: %s", strings.Join(sortedKeys(httpMethods), ", "))
+	}
+	if !confirm {
+		return fmt.Sprintf("删除操作不可撤销。\n\n确认要删除接口时再执行:\napifox-mcp api delete --method %s --path %s --confirm", method, path), nil
+	}
+	return fmt.Sprintf("Apifox 公开 API 暂不支持直接删除接口。\n\n请在 Apifox 客户端中手动删除: %s %s", method, path), nil
+}
+
+func (a *App) deleteSchema(name string, confirm bool) (string, error) {
+	if name == "" {
+		return "", fail(2, "name is required")
+	}
+	if !confirm {
+		return fmt.Sprintf("删除操作不可撤销。\n\n确认要删除数据模型时再执行:\napifox-mcp schema delete --name %s --confirm", name), nil
+	}
+	return fmt.Sprintf("Apifox 公开 API 暂不支持直接删除数据模型。\n\n请在 Apifox 客户端中手动删除: %s", name), nil
+}
+
+func (a *App) createFolder(name string, description string) (string, error) {
+	if name == "" {
+		return "", fail(2, "name is required")
+	}
+	_ = description
+	return fmt.Sprintf("Apifox 的目录可通过接口标签自动形成。\n\n创建或更新接口时设置 tags 包含 %q，或执行:\napifox-mcp tag add --method GET --path /existing-api --tag %s", name, name), nil
+}
+
+func (a *App) deleteFolder(name string, confirm bool) (string, error) {
+	if name == "" {
+		return "", fail(2, "name is required")
+	}
+	if !confirm {
+		return fmt.Sprintf("删除操作不可撤销。\n\n确认要删除目录时再执行:\napifox-mcp folder delete --name %s --confirm", name), nil
+	}
+	return fmt.Sprintf("Apifox 公开 API 暂不支持直接删除目录。\n\n请在 Apifox 客户端中手动删除目录: %s", name), nil
+}
+
+func (a *App) setEndpointTags(path string, method string, tags []string) (string, error) {
+	if path == "" || method == "" {
+		return "", fail(2, "path and method are required")
+	}
+	method = strings.ToUpper(method)
+	if !httpMethods[method] {
+		return "", fail(2, "method must be one of: %s", strings.Join(sortedKeys(httpMethods), ", "))
+	}
+	if len(tags) == 0 {
+		return "", fail(2, "at least one --tag is required")
+	}
+	openapi, err := a.exportOpenAPIMap(false, true)
+	if err != nil {
+		return "", err
+	}
+	paths, _ := toMap(openapi["paths"])
+	pathItem, ok := toMap(paths[path])
+	if !ok {
+		return "", fail(1, "未找到路径为 %s 的接口", path)
+	}
+	operation, ok := toMap(pathItem[strings.ToLower(method)])
+	if !ok {
+		return "", fail(1, "未找到 %s %s 接口", method, path)
+	}
+	tagValues := make([]any, 0, len(tags))
+	for _, tag := range tags {
+		tagValues = append(tagValues, tag)
+	}
+	operation["tags"] = tagValues
+	components := map[string]any{}
+	if rawComponents, ok := toMap(openapi["components"]); ok {
+		components = rawComponents
+	}
+	importSpec := map[string]any{
+		"openapi": "3.0.0",
+		"info":    map[string]any{"title": defaultString(toString(operation["summary"]), "API"), "version": "1.0.0"},
+		"paths":   map[string]any{path: map[string]any{strings.ToLower(method): operation}},
+	}
+	if len(components) > 0 {
+		importSpec["components"] = components
+	}
+	result, err := a.importOpenAPI(importSpec, "OVERWRITE_EXISTING", "OVERWRITE_EXISTING", 0)
+	if err != nil {
+		return "", err
+	}
+	counters := importCounters(result)
+	return fmt.Sprintf("标签更新成功\n\n接口: %s %s\n标签: %s\n更新: %d", method, path, strings.Join(tags, ", "), counters["endpointUpdated"]), nil
 }
 
 func responseCodes(op map[string]any) map[string]bool {

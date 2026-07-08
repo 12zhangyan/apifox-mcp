@@ -49,9 +49,12 @@ After the release workflow completes:
 
 ```bash
 brew tap iwen-conf/tap
+brew trust iwen-conf/tap
 brew install --cask apifox-mcp
 apifox-mcp --version
 ```
+
+Homebrew 6 may refuse third-party casks from untrusted taps. If that happens, run `brew trust iwen-conf/tap` once before installing.
 
 ## Local Checks
 

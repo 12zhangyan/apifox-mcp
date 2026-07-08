@@ -1,54 +1,43 @@
 ---
 name: apifox-cli
-description: Write and maintain Apifox/OpenAPI documentation through the apifox-mcp CLI. Use when Codex needs to read source code, routes, DTOs, validation rules, or product requirements and author structured .apifox-docs.json, .apifox-endpoint.json, or .apifox-crud.json files; validate and dry-run them; apply them to Apifox; inspect existing Apifox endpoints/schemas; generate CRUD docs; or audit API response and naming consistency without relying on Go Swagger marker comments or an MCP client.
+description: Write and maintain Apifox/OpenAPI documentation through the apifox-mcp Go CLI. Use when Codex needs to read source code, routes, DTOs, validation rules, or product requirements; author .apifox-docs.json, .apifox-endpoint.json, .apifox-crud.json, or .apifox-schema.json; validate and dry-run them; apply them to Apifox; inspect endpoints/schemas/tags; or audit API response and naming consistency without Swagger marker comments or MCP tool calls.
 ---
 
 # Apifox CLI
 
-Use the repository's Go `apifox-mcp` CLI as the source of truth. It talks to Apifox directly through official OpenAPI import/export APIs and related `/v1` endpoints.
+Use `apifox-mcp` as a command-line tool. Do not call MCP tools, do not use `list-tools`, `describe`, or `call`, and do not use Swagger marker comments as the primary Go documentation path.
 
-```bash
-apifox-mcp list-tools
-apifox-mcp describe <tool>
-apifox-mcp versions
-apifox-mcp docs-template -o .apifox-docs.json
-apifox-mcp validate-docs --file .apifox-docs.json
-apifox-mcp apply-docs --file .apifox-docs.json --dry-run
-apifox-mcp apply-docs --file .apifox-docs.json
-apifox-mcp endpoint-template --method POST -o .apifox-endpoint.json
-apifox-mcp validate-endpoint --file .apifox-endpoint.json
-apifox-mcp upsert-endpoint --file .apifox-endpoint.json --dry-run
-apifox-mcp upsert-endpoint --file .apifox-endpoint.json
-apifox-mcp request GET /versions --json
-apifox-mcp call <tool> --args '{"key":"value"}'
-apifox-mcp call <tool> --args-file .apifox-request.json
-```
+The purpose of this skill is to let AI read code and requirements, write structured Apifox/OpenAPI JSON specs, validate them locally, dry-run the CLI command, and then apply them to Apifox.
 
 ## Setup
 
-Verify configuration before making changes:
+Resolve the command before doing work:
 
 ```bash
-apifox-mcp call check_apifox_config
+apifox-mcp --help
 ```
 
-Resolve the CLI command before doing work:
+When the binary is not installed but this repository is checked out:
 
-- Prefer `apifox-mcp` when it is installed in PATH.
-- When working inside this repository checkout, use `go run ./cmd/apifox-mcp ...` if the binary is unavailable.
-- When the user provides an `apifox-mcp` checkout path, use `go run <path>/cmd/apifox-mcp ...` or build it with `go build -o <path>/bin/apifox-mcp <path>/cmd/apifox-mcp`.
-- Do not use `python -m apifox_mcp.cli`; the main CLI is Go. Python is retained for the MCP server only.
-- If no usable Go CLI is available, fail with the exact command-not-found, Go toolchain, or build error instead of guessing another API.
+```bash
+go run ./cmd/apifox-mcp --help
+```
 
-Require `APIFOX_TOKEN` and `APIFOX_PROJECT_ID`, or pass `--token` and `--project-id` before the subcommand. Use `--base-url` only when the project uses a non-default Apifox host.
+Verify credentials and project connectivity:
 
-For multi-field inputs, prefer hidden JSON files such as `.apifox-request.json` and call them with `--args-file`. Keep credentials in environment variables instead of JSON files.
+```bash
+apifox-mcp config check
+```
 
-## AI Documentation Workflow
+Require `APIFOX_TOKEN` and `APIFOX_PROJECT_ID`, or pass `--token` and `--project-id` before the subcommand. Keep credentials in environment variables, not JSON files.
 
-For Go projects, do not make Swagger marker comments the primary documentation path. Read routes, handlers, DTOs, validation code, and product requirements; then write structured Apifox JSON specs and send them through the CLI.
+For multi-field AI-generated inputs, write hidden JSON files such as `.apifox-docs.json`, `.apifox-endpoint.json`, `.apifox-crud.json`, `.apifox-schema.json`, or `.apifox-request.json`.
 
-Batch documentation flow:
+## Main Workflow
+
+For Go projects, read routes, handlers, DTOs, validation code, and product requirements. Then write structured specs and send them through the CLI.
+
+Batch endpoint docs:
 
 ```bash
 apifox-mcp docs-template -o .apifox-docs.json
@@ -57,23 +46,23 @@ apifox-mcp apply-docs --file .apifox-docs.json --dry-run
 apifox-mcp apply-docs --file .apifox-docs.json
 ```
 
-Use `.apifox-docs.json` as the normal AI handoff format when documenting more than one endpoint or a resource family. It can contain:
+Use `.apifox-docs.json` when documenting more than one endpoint or a resource family.
 
-- `endpoints`: endpoint specs, each with optional `action` set to `upsert`, `create`, or `update`; prefer `upsert` for documentation sync.
-- `crud`: CRUD resource specs that are passed to `generate_crud_apis`.
+- `endpoints`: endpoint specs, each with optional `action`: `upsert`, `create`, or `update`. Prefer `upsert` for AI documentation sync.
+- `crud`: CRUD resource specs passed to `generate-crud`.
 
-Single endpoint flow:
+Single endpoint:
 
 ```bash
 apifox-mcp endpoint-template --method POST -o .apifox-endpoint.json
 apifox-mcp validate-endpoint --file .apifox-endpoint.json
-apifox-mcp upsert-endpoint --file .apifox-endpoint.json --dry-run
-apifox-mcp upsert-endpoint --file .apifox-endpoint.json
+apifox-mcp api upsert --file .apifox-endpoint.json --dry-run
+apifox-mcp api upsert --file .apifox-endpoint.json
 ```
 
-Use `create-endpoint` only when the endpoint must be new. Use `update-endpoint` when the endpoint must already be treated as an overwrite. Use `upsert-endpoint` for normal AI documentation sync because the underlying Apifox import can create or update.
+Use `api create` only when the endpoint must be new. Use `api update` when the endpoint should already exist. Use `api upsert` for normal AI sync.
 
-CRUD flow:
+CRUD:
 
 ```bash
 apifox-mcp crud-template -o .apifox-crud.json
@@ -82,58 +71,58 @@ apifox-mcp generate-crud --file .apifox-crud.json --dry-run
 apifox-mcp generate-crud --file .apifox-crud.json
 ```
 
-Keep generated specs as hidden JSON files (`.apifox-*.json`) while iterating. Always validate before writing to Apifox, and use `--dry-run` before the first real write.
+Schema:
+
+```bash
+apifox-mcp schema template -o .apifox-schema.json
+apifox-mcp schema create --file .apifox-schema.json --dry-run
+apifox-mcp schema create --file .apifox-schema.json
+apifox-mcp schema update --file .apifox-schema.json --dry-run
+```
+
+Always validate before writing to Apifox, and always run `--dry-run` before the first real write.
 
 ## Discovery
 
-List available operations when unsure:
+Use CLI subcommands to inspect the target Apifox project:
 
 ```bash
-apifox-mcp list-tools
-apifox-mcp describe create_api_endpoint
+apifox-mcp api list --limit 20
+apifox-mcp api get --method GET --path /orders
+apifox-mcp schema list --limit 20
+apifox-mcp schema get Order
+apifox-mcp tag list
+apifox-mcp tag apis --tag 订单管理
+apifox-mcp folder list
+apifox-mcp versions
 ```
 
-Common read operations:
+Use raw `/v1` only for official Apifox endpoints that are not wrapped yet:
 
 ```bash
-apifox-mcp call list_api_endpoints --param limit=20
-apifox-mcp call get_api_endpoint_detail --param path=/orders --param method=GET
-apifox-mcp call list_schemas --param limit=20
-apifox-mcp call get_schema_detail --param name=Order
-apifox-mcp call list_tags
-apifox-mcp call list_folders
+apifox-mcp request GET /versions --json
+apifox-mcp request POST /projects/123/export-openapi --data-file .apifox-request.json --dry-run
 ```
-
-Use `apifox-mcp versions` to verify the configured `X-Apifox-Api-Version` remains supported. Use `apifox-mcp request METHOD /path` only for official Apifox `/v1` endpoints that are not yet wrapped by a high-level command.
 
 ## Import And Export
 
-Use official Apifox import/export APIs for migration, backup, or compatibility work. Do not make this the primary AI documentation workflow:
+Use import/export for migration, backup, or compatibility work. Do not make it the primary AI documentation workflow.
 
 ```bash
 apifox-mcp export-openapi --format JSON --oas-version 3.1 -o .apifox-openapi.json
 apifox-mcp export-openapi --scope tags --tag 订单管理 --format YAML -o .apifox-orders.yaml
 apifox-mcp import-openapi --file .apifox-openapi.json --endpoint-overwrite-behavior AUTO_MERGE
-apifox-mcp import-openapi --url https://example.com/openapi.yaml --prepend-base-path
 apifox-mcp import-postman --file .postman-collection.json
 ```
 
-Use `--scope endpoints --endpoint-id ...`, `--scope tags --tag ...`, or `--scope folders --folder-id ...` to limit exports. Use repeated or comma-separated values for endpoint IDs, folder IDs, tags, excluded tags, and environment IDs.
-
-Before mutating Apifox, preview the exact endpoint and payload:
+Before mutating Apifox through import commands:
 
 ```bash
-apifox-mcp export-openapi --scope tags --tag 订单管理 --dry-run
 apifox-mcp import-openapi --file .apifox-openapi.json --print-payload
 apifox-mcp import-postman --file .postman-collection.json --dry-run
 ```
 
-For imports, choose overwrite behavior deliberately:
-
-- `OVERWRITE_EXISTING`: replace matched resources.
-- `AUTO_MERGE`: merge into matched resources where Apifox supports it.
-- `KEEP_EXISTING`: skip matched resources.
-- `CREATE_NEW`: keep existing resources and create new ones.
+Choose overwrite behavior deliberately: `OVERWRITE_EXISTING`, `AUTO_MERGE`, `KEEP_EXISTING`, or `CREATE_NEW`.
 
 ## API Definition Rules
 
@@ -141,18 +130,12 @@ When creating or updating endpoints:
 
 - Use Chinese business names for `title`; do not use method/path strings or role prefixes.
 - Keep `description` as business context and metadata, not request/response examples.
-- Put every JSON Schema in structured `response_schema` or `request_body_schema`.
+- Put JSON Schema in `response_schema` or `request_body_schema`.
 - Include `description` on every schema field and parameter.
-- Use real example values; do not use type placeholders such as `"string"`.
-- Let the CLI add standard error responses unless the user explicitly supplies a custom `responses` list.
+- Use real example values; do not use placeholders like `"string"`.
+- Let the CLI add standard error responses unless custom `responses` are required.
 
-Example:
-
-```bash
-apifox-mcp call create_api_endpoint --args-file .apifox-create-order.json
-```
-
-Example `.apifox-create-order.json` shape:
+Example endpoint file:
 
 ```json
 {
@@ -184,13 +167,13 @@ Example `.apifox-create-order.json` shape:
 
 ## Audit And Repair
 
-Use audits before broad edits and after endpoint changes:
+Run audits before broad edits and after endpoint changes:
 
 ```bash
-apifox-mcp call audit_all_api_responses
-apifox-mcp call check_api_responses --param path=/orders --param method=POST
-apifox-mcp call check_path_naming_convention --param style=kebab-case
-apifox-mcp call check_response_consistency
+apifox-mcp audit all-responses
+apifox-mcp audit responses --method POST --path /orders
+apifox-mcp audit path-naming --style kebab-case
+apifox-mcp audit consistency
 ```
 
-If a command returns an error, report the exact CLI output and gather more context with `describe`, list/detail commands, or audits before retrying. Do not hide failures behind local assumptions.
+If a command fails, report the exact CLI output. Gather more context with `api list/get`, `schema list/get`, `tag list`, or audits before retrying. Do not hide failures behind local assumptions.
