@@ -208,3 +208,6 @@ poetry.toml
 pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python,macos
+
+# Local notes
+grok的看法.md
