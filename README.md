@@ -56,6 +56,12 @@ Use `--base-url` only when your Apifox deployment is not `https://api.apifox.com
 
 ## CLI Commands
 
+Use the canonical command surface in new scripts: `api create|update|upsert`, `schema create|update`, `apply-docs`, and `generate-crud`. The older `create-endpoint`, `update-endpoint`, and `upsert-endpoint` commands are legacy aliases for compatibility.
+
+Every command and subcommand supports `--help` without requiring credentials, files, or network access. JSON-file inputs accept `--file -` for stdin. Validation commands support `--json` with output shaped as `{"valid": bool, "errors": [...]}` and exit with code `1` when invalid. Discovery, audit, and write commands return structured `--json` output for scripts.
+
+Direct endpoint/schema/folder deletion and folder creation are not currently supported as mutating operations; those commands explain the limitation. Prefer tags for folder-like organization.
+
 Project and discovery:
 
 ```bash
@@ -85,6 +91,14 @@ apifox-cli docs-template -o .apifox-docs.json
 apifox-cli validate-docs --file .apifox-docs.json
 apifox-cli apply-docs --file .apifox-docs.json --dry-run
 apifox-cli apply-docs --file .apifox-docs.json
+```
+
+For broad writes, apply batches with `--offset` and `--limit`:
+
+```bash
+apifox-cli apply-docs --file .apifox-docs.json --batch-size 15 --dry-run
+apifox-cli apply-docs --file .apifox-docs.json --offset 0 --limit 15
+apifox-cli apply-docs --file .apifox-docs.json --offset 15 --limit 15
 ```
 
 CRUD and schema documentation:

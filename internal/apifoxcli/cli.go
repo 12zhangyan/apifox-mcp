@@ -133,11 +133,11 @@ func run(args []string) error {
 	case "validate-endpoint":
 		return app.cmdValidateEndpoint(commandArgs)
 	case "create-endpoint":
-		return app.cmdWriteEndpoint(commandArgs, "create")
+		return app.cmdWriteEndpoint(commandArgs, "create", "create-endpoint")
 	case "update-endpoint":
-		return app.cmdWriteEndpoint(commandArgs, "update")
+		return app.cmdWriteEndpoint(commandArgs, "update", "update-endpoint")
 	case "upsert-endpoint":
-		return app.cmdWriteEndpoint(commandArgs, "upsert")
+		return app.cmdWriteEndpoint(commandArgs, "upsert", "upsert-endpoint")
 	case "crud-template":
 		return app.cmdCRUDTemplate(commandArgs)
 	case "validate-crud":
@@ -199,9 +199,9 @@ Commands:
   apply-docs            Apply endpoint and CRUD docs to Apifox
   endpoint-template     Print an endpoint JSON spec template
   validate-endpoint     Validate an endpoint JSON spec locally
-  create-endpoint       Create an Apifox endpoint from JSON spec
-  update-endpoint       Update an Apifox endpoint from JSON spec
-  upsert-endpoint       Create or overwrite an Apifox endpoint from JSON spec
+  create-endpoint       Legacy alias for api create
+  update-endpoint       Legacy alias for api update
+  upsert-endpoint       Legacy alias for api upsert
   crud-template         Print a CRUD JSON spec template
   validate-crud         Validate a CRUD JSON spec locally
   generate-crud         Generate CRUD endpoint docs in Apifox
@@ -210,6 +210,467 @@ Commands:
   export-openapi        Export OpenAPI/Swagger through official Apifox API
   import-openapi        Import OpenAPI/Swagger through official Apifox API
   import-postman        Import Postman Collection through official Apifox API`)
+}
+
+var commandHelpTexts = map[string]string{
+	"config check": `usage: apifox-cli config check [--json] [-o FILE]
+
+Check APIFOX_TOKEN/APIFOX_PROJECT_ID and project connectivity.
+Options:
+  --json        Print {"result": "..."} for scripts
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli config check --json`,
+
+	"api list": `usage: apifox-cli api list [--keyword TEXT] [--limit N] [--json] [-o FILE]
+
+List HTTP endpoints in the current project.
+Options:
+  --keyword     Filter endpoint title/path
+  --limit       Maximum endpoints to print, default 50
+  --json        Print structured {"endpoints": [...], "total": N} output
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli api list --limit 20`,
+
+	"api get": `usage: apifox-cli api get --method METHOD --path PATH [--json] [-o FILE]
+       apifox-cli api get METHOD PATH [--json]
+
+Show one endpoint by method and path.
+Options:
+  --method      HTTP method
+  --path        Endpoint path, for example /orders/{order_id}
+  --json        Print structured endpoint detail output
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli api get --method GET --path /orders`,
+
+	"api create": `usage: apifox-cli api create --file FILE [--dry-run|--print-payload] [--json]
+
+Create a new endpoint from an endpoint JSON spec. Fails if the endpoint already exists.
+Options:
+  --file           Endpoint spec JSON file, or - for stdin
+  --dry-run        Print the parsed operation without writing to Apifox
+  --print-payload  Alias for --dry-run
+  --json           Print structured endpoint write result
+Example:
+  apifox-cli api create --file .apifox-endpoint.json --dry-run`,
+
+	"api update": `usage: apifox-cli api update --file FILE [--dry-run|--print-payload] [--json]
+
+Overwrite an existing endpoint from an endpoint JSON spec.
+Options:
+  --file           Endpoint spec JSON file, or - for stdin
+  --dry-run        Print the parsed operation without writing to Apifox
+  --print-payload  Alias for --dry-run
+  --json           Print structured endpoint write result
+Example:
+  apifox-cli api update --file .apifox-endpoint.json --dry-run`,
+
+	"api upsert": `usage: apifox-cli api upsert --file FILE [--dry-run|--print-payload] [--json]
+
+Create or overwrite one endpoint from an endpoint JSON spec. This is the preferred AI sync command.
+Options:
+  --file           Endpoint spec JSON file, or - for stdin
+  --dry-run        Print the parsed operation without writing to Apifox
+  --print-payload  Alias for --dry-run
+  --json           Print structured endpoint write result
+Example:
+  apifox-cli api upsert --file .apifox-endpoint.json --dry-run`,
+
+	"api delete": `usage: apifox-cli api delete --method METHOD --path PATH [--confirm] [--json] [-o FILE]
+
+Explain endpoint deletion support. The CLI does not currently perform endpoint deletion.
+Options:
+  --method      HTTP method
+  --path        Endpoint path
+  --confirm     Accepted for command symmetry; no delete is performed
+  --json        Print {"result": "..."} for scripts
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli api delete --method GET --path /orders`,
+
+	"schema template": `usage: apifox-cli schema template [-o FILE]
+
+Print a schema JSON template that can be validated and sent to schema create/update.
+Options:
+  -o, --output  Write template to FILE
+Example:
+  apifox-cli schema template -o .apifox-schema.json`,
+
+	"schema list": `usage: apifox-cli schema list [--keyword TEXT] [--limit N] [--json] [-o FILE]
+
+List schemas in the current project.
+Options:
+  --keyword     Filter schema name
+  --limit       Maximum schemas to print, default 50
+  --json        Print structured {"schemas": [...], "total": N} output
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli schema list --limit 20`,
+
+	"schema get": `usage: apifox-cli schema get NAME [--json] [-o FILE]
+       apifox-cli schema get --name NAME [--json]
+
+Show one schema by name.
+Options:
+  --name        Schema name
+  --json        Print structured schema detail output
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli schema get Order`,
+
+	"schema create": `usage: apifox-cli schema create --file FILE [--dry-run|--print-payload] [--json]
+       apifox-cli schema create --name NAME --description TEXT --properties JSON [options]
+
+Create a schema from a JSON spec or flags.
+Options:
+  --file           Schema spec JSON file, or - for stdin
+  --name           Schema name when not using --file
+  --description    Schema description when not using --file
+  --properties     JSON object or @file for object properties
+  --required       Repeatable or comma-separated required field names
+  --folder-id      Target schema folder id
+  --dry-run        Print the parsed operation without writing to Apifox
+  --print-payload  Alias for --dry-run
+  --json           Print structured schema write result
+Example:
+  apifox-cli schema create --file .apifox-schema.json --dry-run`,
+
+	"schema update": `usage: apifox-cli schema update --file FILE [--dry-run|--print-payload] [--json]
+       apifox-cli schema update --name NAME --description TEXT --properties JSON [options]
+
+Overwrite a schema from a JSON spec or flags.
+Options:
+  --file           Schema spec JSON file, or - for stdin
+  --name           Existing schema name
+  --new-name       New schema name
+  --description    Schema description
+  --properties     JSON object or @file for object properties
+  --required       Repeatable or comma-separated required field names
+  --folder-id      Target schema folder id
+  --dry-run        Print the parsed operation without writing to Apifox
+  --print-payload  Alias for --dry-run
+  --json           Print structured schema write result
+Example:
+  apifox-cli schema update --file .apifox-schema.json --dry-run`,
+
+	"schema delete": `usage: apifox-cli schema delete NAME [--confirm] [--json] [-o FILE]
+
+Explain schema deletion support. The CLI does not currently perform schema deletion.
+Options:
+  --name        Schema name
+  --confirm     Accepted for command symmetry; no delete is performed
+  --json        Print {"result": "..."} for scripts
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli schema delete Order`,
+
+	"tag list": `usage: apifox-cli tag list [--json] [-o FILE]
+
+List tags in the current project.
+Options:
+  --json        Print structured {"tags": [...], "total": N} output
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli tag list`,
+
+	"tag apis": `usage: apifox-cli tag apis --tag TAG [--json] [-o FILE]
+       apifox-cli tag apis TAG [--json]
+
+List endpoints under one tag.
+Options:
+  --tag         Tag name
+  --json        Print structured {"tag": "...", "endpoints": [...]} output
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli tag apis --tag 订单管理`,
+
+	"tag add": `usage: apifox-cli tag add --method METHOD --path PATH --tag TAG [--tag TAG...] [--json] [-o FILE]
+
+Replace an endpoint's tags.
+Options:
+  --method      HTTP method
+  --path        Endpoint path
+  --tag         Repeatable or comma-separated tag names
+  --json        Print {"result": "..."} for scripts
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli tag add --method GET --path /orders --tag 订单管理 --tag 核心接口`,
+
+	"folder list": `usage: apifox-cli folder list [--json] [-o FILE]
+
+List folder/tag structure visible through OpenAPI export.
+Options:
+  --json        Print structured {"folders": [...], "total": N} output
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli folder list`,
+
+	"folder create": `usage: apifox-cli folder create NAME [--description TEXT] [--json] [-o FILE]
+
+Explain folder creation support. The CLI does not currently create folders directly; use tags or Apifox UI.
+Options:
+  --name         Folder name
+  --description  Folder description for future compatibility
+  --json         Print {"result": "..."} for scripts
+  -o, --output   Write output to FILE
+Example:
+  apifox-cli folder create 订单管理`,
+
+	"folder delete": `usage: apifox-cli folder delete NAME [--confirm] [--json] [-o FILE]
+
+Explain folder deletion support. The CLI does not currently delete folders directly.
+Options:
+  --name        Folder name
+  --confirm     Accepted for command symmetry; no delete is performed
+  --json        Print {"result": "..."} for scripts
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli folder delete 订单管理`,
+
+	"audit responses": `usage: apifox-cli audit responses --method METHOD --path PATH [--json] [-o FILE]
+
+Check one endpoint's response coverage.
+Options:
+  --method      HTTP method
+  --path        Endpoint path
+  --json        Print structured response audit output
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli audit responses --method POST --path /orders`,
+
+	"audit all-responses": `usage: apifox-cli audit all-responses [--tag TAG] [--show-complete] [--json] [-o FILE]
+
+Audit response coverage across endpoints.
+Options:
+  --tag           Limit audit to one tag
+  --show-complete Include endpoints with complete coverage
+  --json          Print structured response audit output
+  -o, --output    Write output to FILE
+Example:
+  apifox-cli audit all-responses --tag 订单管理`,
+
+	"audit path-naming": `usage: apifox-cli audit path-naming [--style kebab-case|snake_case|camelCase] [--json] [-o FILE]
+
+Check endpoint path naming style.
+Options:
+  --style       Naming style, default kebab-case
+  --json        Print structured {"valid": bool, "issues": [...]} output
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli audit path-naming --style kebab-case`,
+
+	"audit consistency": `usage: apifox-cli audit consistency [--json] [-o FILE]
+
+Check response naming and schema consistency.
+Options:
+  --json        Print structured {"valid": bool, "issues": [...]} output
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli audit consistency`,
+
+	"endpoint-template": `usage: apifox-cli endpoint-template [--method METHOD] [-o FILE]
+
+Print an endpoint JSON spec template.
+Options:
+  --method      HTTP method for the template, default POST
+  -o, --output  Write template to FILE
+Example:
+  apifox-cli endpoint-template --method POST -o .apifox-endpoint.json`,
+
+	"validate-endpoint": `usage: apifox-cli validate-endpoint --file FILE [--update] [--json]
+
+Validate an endpoint JSON spec locally.
+Options:
+  --file    Endpoint spec JSON file, or - for stdin
+  --update  Allow new_path/new_method for update/upsert specs
+  --json    Print {"valid": bool, "errors": [...]} and exit 1 when invalid
+Example:
+  apifox-cli validate-endpoint --file .apifox-endpoint.json --json`,
+
+	"create-endpoint": `usage: apifox-cli create-endpoint --file FILE [--dry-run|--print-payload] [--json]
+
+Legacy alias for apifox-cli api create. Prefer api create in new scripts.
+Options:
+  --file           Endpoint spec JSON file, or - for stdin
+  --dry-run        Print the parsed operation without writing to Apifox
+  --print-payload  Alias for --dry-run
+  --json           Print structured endpoint write result
+Example:
+  apifox-cli api create --file .apifox-endpoint.json --dry-run`,
+
+	"update-endpoint": `usage: apifox-cli update-endpoint --file FILE [--dry-run|--print-payload] [--json]
+
+Legacy alias for apifox-cli api update. Prefer api update in new scripts.
+Options:
+  --file           Endpoint spec JSON file, or - for stdin
+  --dry-run        Print the parsed operation without writing to Apifox
+  --print-payload  Alias for --dry-run
+  --json           Print structured endpoint write result
+Example:
+  apifox-cli api update --file .apifox-endpoint.json --dry-run`,
+
+	"upsert-endpoint": `usage: apifox-cli upsert-endpoint --file FILE [--dry-run|--print-payload] [--json]
+
+Legacy alias for apifox-cli api upsert. Prefer api upsert in new scripts.
+Options:
+  --file           Endpoint spec JSON file, or - for stdin
+  --dry-run        Print the parsed operation without writing to Apifox
+  --print-payload  Alias for --dry-run
+  --json           Print structured endpoint write result
+Example:
+  apifox-cli api upsert --file .apifox-endpoint.json --dry-run`,
+
+	"crud-template": `usage: apifox-cli crud-template [-o FILE]
+
+Print a CRUD JSON spec template.
+Options:
+  -o, --output  Write template to FILE
+Example:
+  apifox-cli crud-template -o .apifox-crud.json`,
+
+	"validate-crud": `usage: apifox-cli validate-crud --file FILE [--json]
+
+Validate a CRUD JSON spec locally.
+Options:
+  --file  CRUD spec JSON file, or - for stdin
+  --json  Print {"valid": bool, "errors": [...]} and exit 1 when invalid
+Example:
+  apifox-cli validate-crud --file .apifox-crud.json --json`,
+
+	"generate-crud": `usage: apifox-cli generate-crud --file FILE [--dry-run|--print-payload] [--json]
+
+Generate CRUD endpoint docs in Apifox from a CRUD JSON spec.
+Options:
+  --file           CRUD spec JSON file, or - for stdin
+  --dry-run        Print the parsed operation without writing to Apifox
+  --print-payload  Alias for --dry-run
+  --json           Print structured CRUD write result
+Example:
+  apifox-cli generate-crud --file .apifox-crud.json --dry-run`,
+
+	"docs-template": `usage: apifox-cli docs-template [-o FILE]
+
+Print an AI-authorable batch docs JSON template.
+Options:
+  -o, --output  Write template to FILE
+Example:
+  apifox-cli docs-template -o .apifox-docs.json`,
+
+	"validate-docs": `usage: apifox-cli validate-docs --file FILE [--json]
+
+Validate a batch docs JSON spec locally.
+Options:
+  --file  Docs spec JSON file, or - for stdin
+  --json  Print {"valid": bool, "errors": [...]} and exit 1 when invalid
+Example:
+  apifox-cli validate-docs --file .apifox-docs.json --json`,
+
+	"apply-docs": `usage: apifox-cli apply-docs --file FILE [--offset N] [--limit N] [--batch-size N] [--continue-on-error] [--dry-run|--print-payload] [--json]
+
+Apply endpoint and CRUD docs to Apifox. By default, stops at the first failed operation.
+Options:
+  --file           Docs spec JSON file, or - for stdin
+  --offset         Zero-based operation offset for batched writes, default 0
+  --limit          Maximum operations to apply; 0 means no limit
+  --batch-size     Dry-run only: print a batch execution plan with this batch size
+  --continue-on-error Continue applying remaining selected operations after failures
+  --dry-run        Print selected {"operations": [...]} without writing to Apifox
+  --print-payload  Alias for --dry-run
+  --json           Print summary counts and per-operation results
+Example:
+  apifox-cli apply-docs --file .apifox-docs.json --batch-size 15 --dry-run`,
+
+	"versions": `usage: apifox-cli versions [--json] [-o FILE]
+
+List supported Apifox REST API versions.
+Options:
+  --json        Accepted for consistency; output is JSON
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli versions`,
+
+	"request": `usage: apifox-cli request METHOD /endpoint [--query key=value...] [--data JSON|--data-file FILE] [--dry-run] [--json] [-o FILE]
+
+Call a raw Apifox /v1 API endpoint. Endpoint must be relative to /v1.
+Options:
+  --query      Repeatable key=value query parameter
+  --data       JSON object request body
+  --data-file  JSON object request body file, or - for stdin
+  --dry-run    Print request preview without calling Apifox
+  --json       Print raw JSON result
+  -o, --output Write output to FILE
+Example:
+  apifox-cli request GET /versions --json`,
+
+	"export-openapi": `usage: apifox-cli export-openapi [--scope all|endpoints|tags|folders] [options] [-o FILE]
+
+Export OpenAPI/Swagger through official Apifox API.
+Options:
+  --format                 JSON or YAML, default JSON
+  --oas-version            OpenAPI version, default 3.1
+  --scope                  all, endpoints, tags, or folders
+  --endpoint-id            Required/repeatable when --scope endpoints
+  --tag                    Required/repeatable when --scope tags
+  --folder-id              Required/repeatable when --scope folders
+  --exclude-tag            Repeatable excluded tag
+  --dry-run                Print request preview without calling Apifox
+  --print-payload          Alias for --dry-run
+  -o, --output             Write exported spec to FILE
+Example:
+  apifox-cli export-openapi --scope tags --tag 订单管理 -o .apifox-orders.json`,
+
+	"import-openapi": `usage: apifox-cli import-openapi (--file FILE|--url URL) [options] [--dry-run|--print-payload] [--json]
+
+Import OpenAPI/Swagger through official Apifox API.
+Options:
+  --file                         OpenAPI/Swagger file, or - for stdin
+  --url                          OpenAPI/Swagger URL
+  --endpoint-overwrite-behavior  OVERWRITE_EXISTING, AUTO_MERGE, KEEP_EXISTING, or CREATE_NEW
+  --schema-overwrite-behavior    OVERWRITE_EXISTING, AUTO_MERGE, KEEP_EXISTING, or CREATE_NEW
+  --dry-run                      Print request preview without calling Apifox
+  --print-payload                Alias for --dry-run
+  --json                         Print raw JSON result
+Example:
+  apifox-cli import-openapi --file .apifox-openapi.json --print-payload`,
+
+	"import-postman": `usage: apifox-cli import-postman --file FILE [options] [--dry-run|--print-payload] [--json]
+
+Import Postman Collection through official Apifox API.
+Options:
+  --file                         Postman collection file, or - for stdin
+  --endpoint-overwrite-behavior  OVERWRITE_EXISTING, AUTO_MERGE, KEEP_EXISTING, or CREATE_NEW
+  --endpoint-case-overwrite-behavior Endpoint case overwrite behavior
+  --dry-run                      Print request preview without calling Apifox
+  --print-payload                Alias for --dry-run
+  --json                         Print raw JSON result
+Example:
+  apifox-cli import-postman --file .postman-collection.json --dry-run`,
+}
+
+func isHelpArg(arg string) bool {
+	return arg == "-h" || arg == "--help" || arg == "help"
+}
+
+func wantsHelp(args []string) bool {
+	return len(args) > 0 && isHelpArg(args[0])
+}
+
+func commandHelp(name string) error {
+	text, ok := commandHelpTexts[name]
+	if !ok {
+		return fail(2, "no help available for command %q", name)
+	}
+	fmt.Println(strings.TrimSpace(text))
+	return nil
+}
+
+func maybeNestedHelp(args []string, prefix string) (bool, error) {
+	if len(args) > 1 && isHelpArg(args[1]) {
+		return true, commandHelp(prefix + " " + args[0])
+	}
+	return false, nil
 }
 
 func parseGlobal(args []string) (Config, []string, error) {
@@ -378,7 +839,7 @@ func (a *App) callAPI(method string, endpoint string, payload any, params url.Va
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
-		return nil, fail(1, "HTTP %d: %s", resp.StatusCode, extractError(raw))
+		return nil, fail(1, "HTTP %d %s %s: %s", resp.StatusCode, strings.ToUpper(method), endpoint, extractError(raw))
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return map[string]any{}, nil
@@ -1166,6 +1627,9 @@ func validateDocsSpec(spec map[string]any) []string {
 
 func printValidation(errors []string, asJSON bool) error {
 	if asJSON {
+		if errors == nil {
+			errors = []string{}
+		}
 		printJSON(map[string]any{"valid": len(errors) == 0, "errors": errors})
 	} else if len(errors) > 0 {
 		fmt.Println("spec 校验失败:")
@@ -1300,6 +1764,9 @@ func writeTemplate(data map[string]any, output string) error {
 }
 
 func (a *App) cmdEndpointTemplate(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("endpoint-template")
+	}
 	opts, _, err := parseOptions(args, map[string]bool{"method": true, "output": true}, map[string]string{"o": "output"})
 	if err != nil {
 		return err
@@ -1312,6 +1779,9 @@ func (a *App) cmdEndpointTemplate(args []string) error {
 }
 
 func (a *App) cmdCRUDTemplate(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("crud-template")
+	}
 	opts, _, err := parseOptions(args, map[string]bool{"output": true}, map[string]string{"o": "output"})
 	if err != nil {
 		return err
@@ -1320,6 +1790,9 @@ func (a *App) cmdCRUDTemplate(args []string) error {
 }
 
 func (a *App) cmdDocsTemplate(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("docs-template")
+	}
 	opts, _, err := parseOptions(args, map[string]bool{"output": true}, map[string]string{"o": "output"})
 	if err != nil {
 		return err
@@ -1328,6 +1801,9 @@ func (a *App) cmdDocsTemplate(args []string) error {
 }
 
 func (a *App) cmdValidateEndpoint(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("validate-endpoint")
+	}
 	opts, _, err := parseOptions(args, map[string]bool{"file": true}, nil)
 	if err != nil {
 		return err
@@ -1344,6 +1820,9 @@ func (a *App) cmdValidateEndpoint(args []string) error {
 }
 
 func (a *App) cmdValidateCRUD(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("validate-crud")
+	}
 	opts, _, err := parseOptions(args, map[string]bool{"file": true}, nil)
 	if err != nil {
 		return err
@@ -1360,6 +1839,9 @@ func (a *App) cmdValidateCRUD(args []string) error {
 }
 
 func (a *App) cmdValidateDocs(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("validate-docs")
+	}
 	opts, _, err := parseOptions(args, map[string]bool{"file": true}, nil)
 	if err != nil {
 		return err
@@ -1408,25 +1890,44 @@ func optOrPos(opts map[string][]string, key string, pos []string, index int) str
 	return ""
 }
 
-func printTextResult(result string, opts map[string][]string) error {
+type commandResult struct {
+	Text string
+	JSON any
+}
+
+func textResult(text string) commandResult {
+	return commandResult{Text: text, JSON: map[string]any{"result": text}}
+}
+
+func printCommandResult(result commandResult, opts map[string][]string) error {
 	if optBool(opts, "json") {
-		printJSON(map[string]any{"result": result})
+		if result.JSON == nil {
+			result.JSON = map[string]any{"result": result.Text}
+		}
+		printJSON(result.JSON)
 		return nil
 	}
 	if file := optString(opts, "output", ""); file != "" {
-		if err := writeOutput(file, result+"\n"); err != nil {
+		if err := writeOutput(file, result.Text+"\n"); err != nil {
 			return err
 		}
 		fmt.Printf("已写入 %s\n", file)
 		return nil
 	}
-	fmt.Println(result)
+	fmt.Println(result.Text)
 	return nil
+}
+
+func printTextResult(result string, opts map[string][]string) error {
+	return printCommandResult(textResult(result), opts)
 }
 
 func (a *App) cmdConfig(args []string) error {
 	if len(args) == 0 {
 		args = []string{"check"}
+	}
+	if handled, err := maybeNestedHelp(args, "config"); handled {
+		return err
 	}
 	switch args[0] {
 	case "check":
@@ -1460,6 +1961,9 @@ Commands:
   delete                Explain endpoint deletion support`)
 		return nil
 	}
+	if handled, err := maybeNestedHelp(args, "api"); handled {
+		return err
+	}
 	switch args[0] {
 	case "list":
 		opts, _, err := parseOptions(args[1:], map[string]bool{"keyword": true, "limit": true, "output": true}, map[string]string{"o": "output"})
@@ -1474,7 +1978,7 @@ Commands:
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		return printCommandResult(result, opts)
 	case "get":
 		opts, pos, err := parseOptions(args[1:], map[string]bool{"path": true, "method": true, "output": true}, map[string]string{"o": "output"})
 		if err != nil {
@@ -1489,13 +1993,13 @@ Commands:
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		return printCommandResult(result, opts)
 	case "create":
-		return a.cmdWriteEndpoint(args[1:], "create")
+		return a.cmdWriteEndpoint(args[1:], "create", "api create")
 	case "update":
-		return a.cmdWriteEndpoint(args[1:], "update")
+		return a.cmdWriteEndpoint(args[1:], "update", "api update")
 	case "upsert":
-		return a.cmdWriteEndpoint(args[1:], "upsert")
+		return a.cmdWriteEndpoint(args[1:], "upsert", "api upsert")
 	case "delete":
 		opts, pos, err := parseOptions(args[1:], map[string]bool{"path": true, "method": true, "output": true}, map[string]string{"o": "output"})
 		if err != nil {
@@ -1529,6 +2033,9 @@ Commands:
   delete                Explain schema deletion support`)
 		return nil
 	}
+	if handled, err := maybeNestedHelp(args, "schema"); handled {
+		return err
+	}
 	switch args[0] {
 	case "template":
 		opts, _, err := parseOptions(args[1:], map[string]bool{"output": true}, map[string]string{"o": "output"})
@@ -1549,7 +2056,7 @@ Commands:
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		return printCommandResult(result, opts)
 	case "get":
 		opts, pos, err := parseOptions(args[1:], map[string]bool{"name": true, "output": true}, map[string]string{"o": "output"})
 		if err != nil {
@@ -1559,11 +2066,11 @@ Commands:
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		return printCommandResult(result, opts)
 	case "create":
-		return a.cmdWriteSchema(args[1:], "create")
+		return a.cmdWriteSchema(args[1:], "create", "schema create")
 	case "update":
-		return a.cmdWriteSchema(args[1:], "update")
+		return a.cmdWriteSchema(args[1:], "update", "schema update")
 	case "delete":
 		opts, pos, err := parseOptions(args[1:], map[string]bool{"name": true, "output": true}, map[string]string{"o": "output"})
 		if err != nil {
@@ -1589,6 +2096,9 @@ Commands:
   add                   Replace an endpoint's tags`)
 		return nil
 	}
+	if handled, err := maybeNestedHelp(args, "tag"); handled {
+		return err
+	}
 	switch args[0] {
 	case "list":
 		opts, _, err := parseOptions(args[1:], map[string]bool{"output": true}, map[string]string{"o": "output"})
@@ -1599,7 +2109,7 @@ Commands:
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		return printCommandResult(result, opts)
 	case "apis":
 		opts, pos, err := parseOptions(args[1:], map[string]bool{"tag": true, "output": true}, map[string]string{"o": "output"})
 		if err != nil {
@@ -1609,7 +2119,7 @@ Commands:
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		return printCommandResult(result, opts)
 	case "add":
 		opts, pos, err := parseOptions(args[1:], map[string]bool{"path": true, "method": true, "tag": true, "output": true}, map[string]string{"o": "output"})
 		if err != nil {
@@ -1640,6 +2150,9 @@ Commands:
   delete                Explain folder deletion support`)
 		return nil
 	}
+	if handled, err := maybeNestedHelp(args, "folder"); handled {
+		return err
+	}
 	switch args[0] {
 	case "list":
 		opts, _, err := parseOptions(args[1:], map[string]bool{"output": true}, map[string]string{"o": "output"})
@@ -1650,7 +2163,7 @@ Commands:
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		return printCommandResult(result, opts)
 	case "create":
 		opts, pos, err := parseOptions(args[1:], map[string]bool{"name": true, "description": true, "output": true}, map[string]string{"o": "output"})
 		if err != nil {
@@ -1687,6 +2200,9 @@ Commands:
   consistency           Check response consistency`)
 		return nil
 	}
+	if handled, err := maybeNestedHelp(args, "audit"); handled {
+		return err
+	}
 	switch args[0] {
 	case "responses":
 		opts, pos, err := parseOptions(args[1:], map[string]bool{"path": true, "method": true, "output": true}, map[string]string{"o": "output"})
@@ -1702,7 +2218,7 @@ Commands:
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		return printCommandResult(result, opts)
 	case "all-responses":
 		opts, _, err := parseOptions(args[1:], map[string]bool{"tag": true, "output": true}, map[string]string{"o": "output"})
 		if err != nil {
@@ -1712,7 +2228,7 @@ Commands:
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		return printCommandResult(result, opts)
 	case "path-naming":
 		opts, _, err := parseOptions(args[1:], map[string]bool{"style": true, "output": true}, map[string]string{"o": "output"})
 		if err != nil {
@@ -1722,7 +2238,7 @@ Commands:
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		return printCommandResult(result, opts)
 	case "consistency":
 		opts, _, err := parseOptions(args[1:], map[string]bool{"output": true}, map[string]string{"o": "output"})
 		if err != nil {
@@ -1732,13 +2248,16 @@ Commands:
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		return printCommandResult(result, opts)
 	default:
 		return fail(2, "unknown audit command %q", args[0])
 	}
 }
 
-func (a *App) cmdWriteEndpoint(args []string, action string) error {
+func (a *App) cmdWriteEndpoint(args []string, action string, helpName string) error {
+	if wantsHelp(args) {
+		return commandHelp(helpName)
+	}
 	opts, _, err := parseOptions(args, map[string]bool{"file": true}, nil)
 	if err != nil {
 		return err
@@ -1764,9 +2283,9 @@ func (a *App) cmdWriteEndpoint(args []string, action string) error {
 		return err
 	}
 	if optBool(opts, "json") {
-		printJSON(map[string]any{"result": result})
+		printJSON(result.JSON)
 	} else {
-		fmt.Println(result)
+		fmt.Println(result.Text)
 	}
 	return nil
 }
@@ -1840,7 +2359,10 @@ func buildJSONSchema(spec map[string]any) map[string]any {
 	return schema
 }
 
-func (a *App) cmdWriteSchema(args []string, action string) error {
+func (a *App) cmdWriteSchema(args []string, action string, helpName string) error {
+	if wantsHelp(args) {
+		return commandHelp(helpName)
+	}
 	valueFlags := map[string]bool{
 		"file": true, "name": true, "new-name": true, "schema-type": true, "type": true,
 		"description": true, "properties": true, "items": true, "required": true, "folder-id": true,
@@ -1869,14 +2391,17 @@ func (a *App) cmdWriteSchema(args []string, action string) error {
 		return err
 	}
 	if optBool(opts, "json") {
-		printJSON(map[string]any{"result": result})
+		printJSON(result.JSON)
 	} else {
-		fmt.Println(result)
+		fmt.Println(result.Text)
 	}
 	return nil
 }
 
 func (a *App) cmdGenerateCRUD(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("generate-crud")
+	}
 	opts, _, err := parseOptions(args, map[string]bool{"file": true}, nil)
 	if err != nil {
 		return err
@@ -1901,9 +2426,9 @@ func (a *App) cmdGenerateCRUD(args []string) error {
 		return err
 	}
 	if optBool(opts, "json") {
-		printJSON(map[string]any{"result": result})
+		printJSON(result.JSON)
 	} else {
-		fmt.Println(result)
+		fmt.Println(result.Text)
 	}
 	return nil
 }
@@ -1932,8 +2457,88 @@ func docsOperations(spec map[string]any) []map[string]any {
 	return operations
 }
 
+func selectOperations(operations []map[string]any, offset int, limit int) []map[string]any {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(operations) {
+		return []map[string]any{}
+	}
+	end := len(operations)
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	return operations[offset:end]
+}
+
+func batchPlan(file string, total int, batchSize int) []map[string]any {
+	var batches []map[string]any
+	if batchSize <= 0 {
+		return batches
+	}
+	for offset := 0; offset < total; offset += batchSize {
+		count := batchSize
+		if offset+count > total {
+			count = total - offset
+		}
+		command := fmt.Sprintf("apifox-cli apply-docs --file %s --offset %d --limit %d", file, offset, count)
+		batches = append(batches, map[string]any{
+			"offset":  offset,
+			"limit":   count,
+			"count":   count,
+			"command": command,
+		})
+	}
+	return batches
+}
+
+func applyDocsSummary(total int, offset int, limit int, selected []map[string]any, results []map[string]any) map[string]any {
+	failures := 0
+	for _, result := range results {
+		if toString(result["status"]) == "failed" {
+			failures++
+		}
+	}
+	return map[string]any{
+		"total_operations":    total,
+		"selected_operations": len(selected),
+		"offset":              offset,
+		"limit":               limit,
+		"results":             results,
+		"success_count":       len(results) - failures,
+		"failure_count":       failures,
+	}
+}
+
+func addOperationIdentity(item map[string]any, kind string, spec map[string]any) {
+	switch kind {
+	case "endpoint":
+		item["title"] = toString(spec["title"])
+		item["method"] = strings.ToUpper(toString(spec["method"]))
+		item["path"] = toString(spec["path"])
+		if value := strings.TrimSpace(toString(spec["new_method"])); value != "" {
+			item["new_method"] = strings.ToUpper(value)
+		}
+		if value := strings.TrimSpace(toString(spec["new_path"])); value != "" {
+			item["new_path"] = value
+		}
+	case "crud":
+		item["resource_name"] = toString(spec["resource_name"])
+		item["resource_name_cn"] = toString(spec["resource_name_cn"])
+		item["base_path"] = toString(spec["base_path"])
+	case "schema":
+		item["name"] = toString(spec["name"])
+		if value := strings.TrimSpace(toString(spec["new_name"])); value != "" {
+			item["new_name"] = value
+		}
+	}
+}
+
 func (a *App) cmdApplyDocs(args []string) error {
-	opts, _, err := parseOptions(args, map[string]bool{"file": true}, nil)
+	if wantsHelp(args) {
+		return commandHelp("apply-docs")
+	}
+	opts, _, err := parseOptions(args, map[string]bool{"file": true, "offset": true, "limit": true, "batch-size": true}, nil)
 	if err != nil {
 		return err
 	}
@@ -1948,40 +2553,93 @@ func (a *App) cmdApplyDocs(args []string) error {
 	if err := mustValid(validateDocsSpec(spec), "docs spec"); err != nil {
 		return err
 	}
+	offset, err := optInt(opts, "offset", 0)
+	if err != nil {
+		return err
+	}
+	limit, err := optInt(opts, "limit", 0)
+	if err != nil {
+		return err
+	}
+	if offset < 0 {
+		return fail(2, "--offset must be greater than or equal to 0")
+	}
+	if limit < 0 {
+		return fail(2, "--limit must be greater than or equal to 0")
+	}
+	batchSize, err := optInt(opts, "batch-size", 0)
+	if err != nil {
+		return err
+	}
+	if batchSize < 0 {
+		return fail(2, "--batch-size must be greater than or equal to 0")
+	}
 	operations := docsOperations(spec)
+	selected := selectOperations(operations, offset, limit)
 	if optBool(opts, "dry-run") || optBool(opts, "print-payload") {
-		printJSON(map[string]any{"operations": operations})
+		printJSON(map[string]any{
+			"total_operations":    len(operations),
+			"selected_operations": len(selected),
+			"offset":              offset,
+			"limit":               limit,
+			"batch_size":          batchSize,
+			"batches":             batchPlan(file, len(operations), batchSize),
+			"operations":          selected,
+		})
 		return nil
+	}
+	if batchSize > 0 {
+		return fail(2, "--batch-size is only supported with --dry-run or --print-payload")
 	}
 
 	var results []map[string]any
-	for index, operation := range operations {
+	continueOnError := optBool(opts, "continue-on-error")
+	for index, operation := range selected {
 		action := toString(operation["action"])
 		kind := toString(operation["kind"])
 		command := toString(operation["command"])
 		argsMap, _ := toMap(operation["spec"])
-		var result string
+		var result commandResult
 		var applyErr error
 		if kind == "crud" {
 			result, applyErr = a.applyCRUD(argsMap)
 		} else {
 			result, applyErr = a.applyEndpoint(argsMap, action)
 		}
-		item := map[string]any{"index": index + 1, "action": action, "kind": kind, "command": command, "result": result}
+		item := map[string]any{
+			"index":   offset + index + 1,
+			"action":  action,
+			"kind":    kind,
+			"command": command,
+			"result":  result.Text,
+			"data":    result.JSON,
+			"status":  "success",
+		}
+		addOperationIdentity(item, kind, argsMap)
 		results = append(results, item)
 		if applyErr != nil {
+			item["status"] = "failed"
 			item["error"] = applyErr.Error()
 			if optBool(opts, "json") {
-				printJSON(map[string]any{"results": results})
+				printJSON(applyDocsSummary(len(operations), offset, limit, selected, results))
+			} else {
+				fmt.Printf("[%d/%d] %s\n失败: %s\n", index+1, len(selected), command, applyErr.Error())
+			}
+			if continueOnError {
+				continue
 			}
 			return applyErr
 		}
 		if !optBool(opts, "json") {
-			fmt.Printf("[%d/%d] %s\n%s\n", index+1, len(operations), command, result)
+			fmt.Printf("[%d/%d] #%d %s\n%s\n", index+1, len(selected), offset+index+1, command, result.Text)
 		}
 	}
+	summary := applyDocsSummary(len(operations), offset, limit, selected, results)
 	if optBool(opts, "json") {
-		printJSON(map[string]any{"results": results})
+		printJSON(summary)
+	}
+	if failures := toInt(summary["failure_count"], 0); failures > 0 {
+		return fail(1, "apply-docs failed: %d of %d selected operations failed", failures, len(selected))
 	}
 	return nil
 }
@@ -2245,9 +2903,9 @@ func (a *App) importOpenAPIWithFolders(openapi map[string]any, endpointBehavior 
 	return a.callAPI("POST", "/projects/"+a.Config.ProjectID+"/import-openapi", payload, params)
 }
 
-func (a *App) applyEndpoint(spec map[string]any, action string) (string, error) {
+func (a *App) applyEndpoint(spec map[string]any, action string) (commandResult, error) {
 	if err := a.requireConfig(); err != nil {
-		return "", err
+		return commandResult{}, err
 	}
 	update := action == "update" || action == "upsert"
 	method := strings.ToUpper(toString(spec["method"]))
@@ -2255,10 +2913,10 @@ func (a *App) applyEndpoint(spec map[string]any, action string) (string, error) 
 	if action == "create" {
 		exists, title, err := a.endpointExists(path, method)
 		if err != nil {
-			return "", err
+			return commandResult{}, err
 		}
 		if exists {
-			return "", fail(1, "接口已存在，无法创建: %s %s (%s)", method, path, title)
+			return commandResult{}, fail(1, "接口已存在，无法创建: %s %s (%s)", method, path, title)
 		}
 	}
 	openapi := buildOpenAPISpec(spec, update)
@@ -2268,7 +2926,7 @@ func (a *App) applyEndpoint(spec map[string]any, action string) (string, error) 
 	}
 	result, err := a.importOpenAPI(openapi, behavior, "OVERWRITE_EXISTING", toInt(spec["folder_id"], 0))
 	if err != nil {
-		return "", err
+		return commandResult{}, err
 	}
 	counters := importCounters(result)
 	finalPath := path
@@ -2279,12 +2937,26 @@ func (a *App) applyEndpoint(spec map[string]any, action string) (string, error) 
 	if update && strings.TrimSpace(toString(spec["new_method"])) != "" {
 		finalMethod = strings.ToUpper(toString(spec["new_method"]))
 	}
-	return fmt.Sprintf("接口写入成功\n\n名称: %s\n路径: %s %s\n创建: %d\n更新: %d", toString(spec["title"]), finalMethod, finalPath, counters["endpointCreated"], counters["endpointUpdated"]), nil
+	text := fmt.Sprintf("接口写入成功\n\n名称: %s\n路径: %s %s\n创建: %d\n更新: %d", toString(spec["title"]), finalMethod, finalPath, counters["endpointCreated"], counters["endpointUpdated"])
+	return commandResult{
+		Text: text,
+		JSON: map[string]any{
+			"kind":          "endpoint",
+			"action":        action,
+			"title":         toString(spec["title"]),
+			"method":        finalMethod,
+			"path":          finalPath,
+			"created":       counters["endpointCreated"],
+			"updated":       counters["endpointUpdated"],
+			"counters":      counters,
+			"import_result": result,
+		},
+	}, nil
 }
 
-func (a *App) applySchema(spec map[string]any, action string) (string, error) {
+func (a *App) applySchema(spec map[string]any, action string) (commandResult, error) {
 	if err := a.requireConfig(); err != nil {
-		return "", err
+		return commandResult{}, err
 	}
 	name := toString(spec["name"])
 	finalName := defaultString(toString(spec["new_name"]), name)
@@ -2302,14 +2974,27 @@ func (a *App) applySchema(spec map[string]any, action string) (string, error) {
 	}
 	result, err := a.importOpenAPIWithFolders(openapi, "OVERWRITE_EXISTING", behavior, 0, toInt(spec["folder_id"], 0))
 	if err != nil {
-		return "", err
+		return commandResult{}, err
 	}
 	counters := importCounters(result)
 	actionName := "创建"
 	if action == "update" {
 		actionName = "更新"
 	}
-	return fmt.Sprintf("数据模型%s成功\n\n名称: %s\n类型: %s\n创建: %d\n更新: %d", actionName, finalName, schemaType(spec), counters["schemaCreated"], counters["schemaUpdated"]), nil
+	text := fmt.Sprintf("数据模型%s成功\n\n名称: %s\n类型: %s\n创建: %d\n更新: %d", actionName, finalName, schemaType(spec), counters["schemaCreated"], counters["schemaUpdated"])
+	return commandResult{
+		Text: text,
+		JSON: map[string]any{
+			"kind":          "schema",
+			"action":        action,
+			"name":          finalName,
+			"type":          schemaType(spec),
+			"created":       counters["schemaCreated"],
+			"updated":       counters["schemaUpdated"],
+			"counters":      counters,
+			"import_result": result,
+		},
+	}, nil
 }
 
 func importCounters(result any) map[string]int {
@@ -2600,24 +3285,42 @@ func mergePathItem(raw any, method string, operation map[string]any) map[string]
 	return item
 }
 
-func (a *App) applyCRUD(spec map[string]any) (string, error) {
+func (a *App) applyCRUD(spec map[string]any) (commandResult, error) {
 	openapi, created := buildCRUDOpenAPI(spec)
 	result, err := a.importOpenAPI(openapi, "OVERWRITE_EXISTING", "OVERWRITE_EXISTING", toInt(spec["folder_id"], 0))
 	if err != nil {
-		return "", err
+		return commandResult{}, err
 	}
 	counters := importCounters(result)
-	return fmt.Sprintf("CRUD 接口批量写入成功\n\n资源: %s (%s)\n基础路径: %s\n创建: %d\n更新: %d\n接口:\n  %s",
+	text := fmt.Sprintf("CRUD 接口批量写入成功\n\n资源: %s (%s)\n基础路径: %s\n创建: %d\n更新: %d\n接口:\n  %s",
 		toString(spec["resource_name_cn"]),
 		toString(spec["resource_name"]),
 		toString(spec["base_path"]),
 		counters["endpointCreated"],
 		counters["endpointUpdated"],
 		strings.Join(created, "\n  "),
-	), nil
+	)
+	return commandResult{
+		Text: text,
+		JSON: map[string]any{
+			"kind":             "crud",
+			"action":           "generate",
+			"resource_name":    toString(spec["resource_name"]),
+			"resource_name_cn": toString(spec["resource_name_cn"]),
+			"base_path":        toString(spec["base_path"]),
+			"created":          counters["endpointCreated"],
+			"updated":          counters["endpointUpdated"],
+			"endpoints":        created,
+			"counters":         counters,
+			"import_result":    result,
+		},
+	}, nil
 }
 
 func (a *App) cmdExportOpenAPI(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("export-openapi")
+	}
 	valueFlags := map[string]bool{"format": true, "oas-version": true, "scope": true, "endpoint-id": true, "tag": true, "folder-id": true, "exclude-tag": true, "environment-id": true, "branch-id": true, "module-id": true, "output": true, "locale": true}
 	opts, _, err := parseOptions(args, valueFlags, map[string]string{"o": "output"})
 	if err != nil {
@@ -2755,6 +3458,9 @@ func importOptions(opts map[string][]string, includeSchema bool) map[string]any 
 }
 
 func (a *App) cmdImportOpenAPI(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("import-openapi")
+	}
 	valueFlags := map[string]bool{"file": true, "url": true, "basic-auth-username": true, "basic-auth-password": true, "target-endpoint-folder-id": true, "endpoint-overwrite-behavior": true, "target-schema-folder-id": true, "schema-overwrite-behavior": true, "locale": true}
 	opts, _, err := parseOptions(args, valueFlags, nil)
 	if err != nil {
@@ -2807,6 +3513,9 @@ func (a *App) cmdImportOpenAPI(args []string) error {
 }
 
 func (a *App) cmdImportPostman(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("import-postman")
+	}
 	valueFlags := map[string]bool{"file": true, "target-endpoint-folder-id": true, "endpoint-overwrite-behavior": true, "endpoint-case-overwrite-behavior": true, "locale": true}
 	opts, _, err := parseOptions(args, valueFlags, nil)
 	if err != nil {
@@ -2858,6 +3567,9 @@ func printRequestPreview(method string, endpoint string, payload any, params map
 }
 
 func (a *App) cmdVersions(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("versions")
+	}
 	opts, _, err := parseOptions(args, map[string]bool{"output": true}, map[string]string{"o": "output"})
 	if err != nil {
 		return err
@@ -2879,6 +3591,9 @@ func (a *App) cmdVersions(args []string) error {
 }
 
 func (a *App) cmdRequest(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("request")
+	}
 	valueFlags := map[string]bool{"query": true, "data": true, "data-file": true, "output": true, "locale": true}
 	opts, pos, err := parseOptions(args, valueFlags, map[string]string{"o": "output"})
 	if err != nil {
@@ -2983,19 +3698,34 @@ func (a *App) checkConfig() (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
-func (a *App) listAPIEndpoints(keyword string, limit int) (string, error) {
-	openapi, err := a.exportOpenAPIMap(false, true)
-	if err != nil {
-		return "", err
+type endpointInfo struct {
+	Method      string
+	Path        string
+	Title       string
+	OperationID string
+	Description string
+	Tags        []string
+	Operation   map[string]any
+}
+
+func endpointInfoJSON(api endpointInfo, includeOperation bool) map[string]any {
+	item := map[string]any{
+		"method":       api.Method,
+		"path":         api.Path,
+		"title":        api.Title,
+		"operation_id": api.OperationID,
+		"description":  api.Description,
+		"tags":         api.Tags,
 	}
+	if includeOperation {
+		item["operation"] = api.Operation
+	}
+	return item
+}
+
+func collectAPIEndpointInfos(openapi map[string]any, keyword string) []endpointInfo {
 	paths, _ := toMap(openapi["paths"])
-	type apiInfo struct {
-		Method string
-		Path   string
-		Name   string
-		Tags   string
-	}
-	var apis []apiInfo
+	var apis []endpointInfo
 	for path, rawMethods := range paths {
 		methods, _ := toMap(rawMethods)
 		for method, rawOp := range methods {
@@ -3003,8 +3733,8 @@ func (a *App) listAPIEndpoints(keyword string, limit int) (string, error) {
 				continue
 			}
 			op, _ := toMap(rawOp)
-			name := defaultString(toString(op["summary"]), toString(op["operationId"]))
-			if keyword != "" && !strings.Contains(strings.ToLower(name+" "+path), strings.ToLower(keyword)) {
+			title := defaultString(toString(op["summary"]), toString(op["operationId"]))
+			if keyword != "" && !strings.Contains(strings.ToLower(title+" "+path), strings.ToLower(keyword)) {
 				continue
 			}
 			var tags []string
@@ -3013,7 +3743,15 @@ func (a *App) listAPIEndpoints(keyword string, limit int) (string, error) {
 					tags = append(tags, toString(value))
 				}
 			}
-			apis = append(apis, apiInfo{Method: strings.ToUpper(method), Path: path, Name: defaultString(name, "未命名"), Tags: strings.Join(tags, ", ")})
+			apis = append(apis, endpointInfo{
+				Method:      strings.ToUpper(method),
+				Path:        path,
+				Title:       defaultString(title, "未命名"),
+				OperationID: toString(op["operationId"]),
+				Description: toString(op["description"]),
+				Tags:        tags,
+				Operation:   op,
+			})
 		}
 	}
 	sort.Slice(apis, func(i, j int) bool {
@@ -3022,46 +3760,98 @@ func (a *App) listAPIEndpoints(keyword string, limit int) (string, error) {
 		}
 		return apis[i].Path < apis[j].Path
 	})
+	return apis
+}
+
+func limitedEndpoints(apis []endpointInfo, limit int) []endpointInfo {
+	if limit <= 0 {
+		limit = 50
+	}
+	if len(apis) <= limit {
+		return apis
+	}
+	return apis[:limit]
+}
+
+func endpointListJSON(apis []endpointInfo, returned []endpointInfo, keyword string, limit int) map[string]any {
+	items := make([]map[string]any, 0, len(returned))
+	for _, api := range returned {
+		items = append(items, endpointInfoJSON(api, false))
+	}
+	return map[string]any{
+		"endpoints": items,
+		"keyword":   keyword,
+		"limit":     limit,
+		"returned":  len(returned),
+		"total":     len(apis),
+		"truncated": len(returned) < len(apis),
+	}
+}
+
+func formatEndpointList(apis []endpointInfo, returned []endpointInfo) string {
 	if len(apis) == 0 {
-		return "当前项目中没有接口", nil
+		return "当前项目中没有接口"
+	}
+	lines := []string{fmt.Sprintf("接口列表 (共 %d 个)", len(apis)), strings.Repeat("=", 70)}
+	for _, api := range returned {
+		line := fmt.Sprintf("[%-6s] %-40s | %s", api.Method, api.Path, api.Title)
+		if len(api.Tags) > 0 {
+			line += " [" + strings.Join(api.Tags, ", ") + "]"
+		}
+		lines = append(lines, line)
+	}
+	if len(apis) > len(returned) {
+		lines = append(lines, fmt.Sprintf("\n... 还有 %d 个接口未显示", len(apis)-len(returned)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (a *App) listAPIEndpoints(keyword string, limit int) (commandResult, error) {
+	openapi, err := a.exportOpenAPIMap(false, true)
+	if err != nil {
+		return commandResult{}, err
 	}
 	if limit <= 0 {
 		limit = 50
 	}
-	lines := []string{fmt.Sprintf("接口列表 (共 %d 个)", len(apis)), strings.Repeat("=", 70)}
-	for index, api := range apis {
-		if index >= limit {
-			break
-		}
-		line := fmt.Sprintf("[%-6s] %-40s | %s", api.Method, api.Path, api.Name)
-		if api.Tags != "" {
-			line += " [" + api.Tags + "]"
-		}
-		lines = append(lines, line)
-	}
-	if len(apis) > limit {
-		lines = append(lines, fmt.Sprintf("\n... 还有 %d 个接口未显示", len(apis)-limit))
-	}
-	return strings.Join(lines, "\n"), nil
+	apis := collectAPIEndpointInfos(openapi, keyword)
+	returned := limitedEndpoints(apis, limit)
+	return commandResult{Text: formatEndpointList(apis, returned), JSON: endpointListJSON(apis, returned, keyword, limit)}, nil
 }
 
-func (a *App) getEndpointDetail(path string, method string) (string, error) {
-	if path == "" || method == "" {
-		return "", fail(2, "path and method are required")
+func endpointDetailJSON(path string, method string, op map[string]any) map[string]any {
+	params, _ := toSlice(op["parameters"])
+	responses, _ := toMap(op["responses"])
+	var tags []string
+	if values, ok := toSlice(op["tags"]); ok {
+		for _, value := range values {
+			tags = append(tags, toString(value))
+		}
 	}
-	openapi, err := a.exportOpenAPIMap(false, true)
-	if err != nil {
-		return "", err
+	var responseItems []map[string]any
+	var codes []string
+	for code := range responses {
+		codes = append(codes, code)
 	}
-	paths, _ := toMap(openapi["paths"])
-	pathItem, ok := toMap(paths[path])
-	if !ok {
-		return "未找到路径为 " + path + " 的接口", nil
+	sort.Strings(codes)
+	for _, code := range codes {
+		resp, _ := toMap(responses[code])
+		responseItems = append(responseItems, map[string]any{"code": code, "description": toString(resp["description"]), "response": resp})
 	}
-	op, ok := toMap(pathItem[strings.ToLower(method)])
-	if !ok {
-		return "未找到 " + strings.ToUpper(method) + " " + path + " 接口", nil
+	return map[string]any{
+		"found":       true,
+		"method":      strings.ToUpper(method),
+		"path":        path,
+		"title":       defaultString(toString(op["summary"]), "未命名"),
+		"description": defaultString(toString(op["description"]), ""),
+		"tags":        tags,
+		"parameters":  params,
+		"responses":   responseItems,
+		"operation":   op,
 	}
+}
+
+func formatEndpointDetail(path string, method string, op map[string]any) string {
 	params, _ := toSlice(op["parameters"])
 	responses, _ := toMap(op["responses"])
 	var tags []string
@@ -3097,54 +3887,133 @@ func (a *App) getEndpointDetail(path string, method string) (string, error) {
 		resp, _ := toMap(responses[code])
 		lines = append(lines, fmt.Sprintf("  - %s: %s", code, toString(resp["description"])))
 	}
-	return strings.Join(lines, "\n"), nil
+	return strings.Join(lines, "\n")
 }
 
-func (a *App) listSchemas(keyword string, limit int) (string, error) {
+func notFoundResult(message string, fields map[string]any) commandResult {
+	payload := map[string]any{"found": false, "message": message}
+	for key, value := range fields {
+		payload[key] = value
+	}
+	return commandResult{Text: message, JSON: payload}
+}
+
+func (a *App) getEndpointDetail(path string, method string) (commandResult, error) {
+	if path == "" || method == "" {
+		return commandResult{}, fail(2, "path and method are required")
+	}
 	openapi, err := a.exportOpenAPIMap(false, true)
 	if err != nil {
-		return "", err
+		return commandResult{}, err
 	}
+	paths, _ := toMap(openapi["paths"])
+	pathItem, ok := toMap(paths[path])
+	if !ok {
+		message := "未找到路径为 " + path + " 的接口"
+		return notFoundResult(message, map[string]any{"method": strings.ToUpper(method), "path": path}), nil
+	}
+	op, ok := toMap(pathItem[strings.ToLower(method)])
+	if !ok {
+		message := "未找到 " + strings.ToUpper(method) + " " + path + " 接口"
+		return notFoundResult(message, map[string]any{"method": strings.ToUpper(method), "path": path}), nil
+	}
+	return commandResult{Text: formatEndpointDetail(path, method, op), JSON: endpointDetailJSON(path, method, op)}, nil
+}
+
+type schemaInfo struct {
+	Name          string
+	Type          string
+	Description   string
+	PropertyCount int
+	Schema        map[string]any
+}
+
+func collectSchemaInfos(openapi map[string]any, keyword string) []schemaInfo {
 	components, _ := toMap(openapi["components"])
 	schemas, _ := toMap(components["schemas"])
-	if len(schemas) == 0 {
-		return "当前项目中没有数据模型", nil
-	}
-	var names []string
-	for name := range schemas {
-		if keyword == "" || strings.Contains(strings.ToLower(name), strings.ToLower(keyword)) {
-			names = append(names, name)
+	var infos []schemaInfo
+	for name, rawSchema := range schemas {
+		if keyword != "" && !strings.Contains(strings.ToLower(name), strings.ToLower(keyword)) {
+			continue
 		}
+		schema, _ := toMap(rawSchema)
+		properties, _ := toMap(schema["properties"])
+		infos = append(infos, schemaInfo{
+			Name:          name,
+			Type:          defaultString(toString(schema["type"]), "object"),
+			Description:   toString(schema["description"]),
+			PropertyCount: len(properties),
+			Schema:        schema,
+		})
 	}
-	sort.Strings(names)
-	lines := []string{fmt.Sprintf("数据模型列表 (共 %d 个)", len(names)), strings.Repeat("=", 50)}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
+	return infos
+}
+
+func schemaListJSON(schemas []schemaInfo, returned []schemaInfo, keyword string, limit int) map[string]any {
+	items := make([]map[string]any, 0, len(returned))
+	for _, schema := range returned {
+		items = append(items, map[string]any{
+			"name":           schema.Name,
+			"type":           schema.Type,
+			"description":    schema.Description,
+			"property_count": schema.PropertyCount,
+		})
+	}
+	return map[string]any{
+		"schemas":   items,
+		"keyword":   keyword,
+		"limit":     limit,
+		"returned":  len(returned),
+		"total":     len(schemas),
+		"truncated": len(returned) < len(schemas),
+	}
+}
+
+func formatSchemaList(schemas []schemaInfo, returned []schemaInfo) string {
+	if len(schemas) == 0 {
+		return "当前项目中没有数据模型"
+	}
+	lines := []string{fmt.Sprintf("数据模型列表 (共 %d 个)", len(schemas)), strings.Repeat("=", 50)}
+	for _, schema := range returned {
+		lines = append(lines, fmt.Sprintf("- [%-8s] %s (%d 个属性)", schema.Type, schema.Name, schema.PropertyCount))
+	}
+	if len(schemas) > len(returned) {
+		lines = append(lines, fmt.Sprintf("\n... 还有 %d 个数据模型未显示", len(schemas)-len(returned)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (a *App) listSchemas(keyword string, limit int) (commandResult, error) {
+	openapi, err := a.exportOpenAPIMap(false, true)
+	if err != nil {
+		return commandResult{}, err
+	}
 	if limit <= 0 {
 		limit = 50
 	}
-	for index, name := range names {
-		if index >= limit {
-			break
-		}
-		schema, _ := toMap(schemas[name])
-		properties, _ := toMap(schema["properties"])
-		lines = append(lines, fmt.Sprintf("- [%-8s] %s (%d 个属性)", defaultString(toString(schema["type"]), "object"), name, len(properties)))
+	schemas := collectSchemaInfos(openapi, keyword)
+	returned := schemas
+	if len(returned) > limit {
+		returned = returned[:limit]
 	}
-	return strings.Join(lines, "\n"), nil
+	return commandResult{Text: formatSchemaList(schemas, returned), JSON: schemaListJSON(schemas, returned, keyword, limit)}, nil
 }
 
-func (a *App) getSchemaDetail(name string) (string, error) {
+func (a *App) getSchemaDetail(name string) (commandResult, error) {
 	if name == "" {
-		return "", fail(2, "name is required")
+		return commandResult{}, fail(2, "name is required")
 	}
 	openapi, err := a.exportOpenAPIMap(false, true)
 	if err != nil {
-		return "", err
+		return commandResult{}, err
 	}
 	components, _ := toMap(openapi["components"])
 	schemas, _ := toMap(components["schemas"])
 	schema, ok := toMap(schemas[name])
 	if !ok {
-		return "未找到名为 " + name + " 的数据模型", nil
+		message := "未找到名为 " + name + " 的数据模型"
+		return notFoundResult(message, map[string]any{"name": name}), nil
 	}
 	properties, _ := toMap(schema["properties"])
 	required := map[string]bool{}
@@ -3154,6 +4023,7 @@ func (a *App) getSchemaDetail(name string) (string, error) {
 		}
 	}
 	lines := []string{"数据模型详情: " + name, strings.Repeat("=", 50), "说明: " + defaultString(toString(schema["description"]), "无"), "类型: " + defaultString(toString(schema["type"]), "unknown"), ""}
+	var propertyItems []map[string]any
 	if len(properties) > 0 {
 		lines = append(lines, fmt.Sprintf("属性列表 (%d 个):", len(properties)))
 		var names []string
@@ -3168,17 +4038,35 @@ func (a *App) getSchemaDetail(name string) (string, error) {
 				mark = "*"
 			}
 			lines = append(lines, fmt.Sprintf("%s %s: %s", mark, propName, defaultString(toString(prop["type"]), "any")))
+			propertyItems = append(propertyItems, map[string]any{
+				"name":        propName,
+				"type":        defaultString(toString(prop["type"]), "any"),
+				"description": toString(prop["description"]),
+				"required":    required[propName],
+				"schema":      prop,
+			})
 		}
 	}
 	lines = append(lines, "\n* 表示必填字段")
-	return strings.Join(lines, "\n"), nil
+	return commandResult{
+		Text: strings.Join(lines, "\n"),
+		JSON: map[string]any{
+			"found":       true,
+			"name":        name,
+			"type":        defaultString(toString(schema["type"]), "unknown"),
+			"description": defaultString(toString(schema["description"]), ""),
+			"properties":  propertyItems,
+			"schema":      schema,
+		},
+	}, nil
 }
 
-func (a *App) listTags() (string, error) {
-	openapi, err := a.exportOpenAPIMap(false, true)
-	if err != nil {
-		return "", err
-	}
+type tagInfo struct {
+	Name          string
+	EndpointCount int
+}
+
+func collectTagInfos(openapi map[string]any) []tagInfo {
 	paths, _ := toMap(openapi["paths"])
 	counts := map[string]int{}
 	for _, rawMethods := range paths {
@@ -3198,55 +4086,88 @@ func (a *App) listTags() (string, error) {
 			}
 		}
 	}
-	var names []string
+	var tags []tagInfo
 	for name := range counts {
-		names = append(names, name)
+		tags = append(tags, tagInfo{Name: name, EndpointCount: counts[name]})
 	}
-	sort.Slice(names, func(i, j int) bool {
-		if counts[names[i]] == counts[names[j]] {
-			return names[i] < names[j]
+	sort.Slice(tags, func(i, j int) bool {
+		if tags[i].EndpointCount == tags[j].EndpointCount {
+			return tags[i].Name < tags[j].Name
 		}
-		return counts[names[i]] > counts[names[j]]
+		return tags[i].EndpointCount > tags[j].EndpointCount
 	})
-	lines := []string{fmt.Sprintf("标签列表 (共 %d 个)", len(names)), strings.Repeat("=", 50)}
-	for _, name := range names {
-		lines = append(lines, fmt.Sprintf("- %s: %d 个接口", name, counts[name]))
-	}
-	return strings.Join(lines, "\n"), nil
+	return tags
 }
 
-func (a *App) getAPIsByTag(tag string) (string, error) {
+func tagsJSON(key string, tags []tagInfo) map[string]any {
+	items := make([]map[string]any, 0, len(tags))
+	for _, tag := range tags {
+		items = append(items, map[string]any{"name": tag.Name, "endpoint_count": tag.EndpointCount})
+	}
+	return map[string]any{key: items, "total": len(tags)}
+}
+
+func formatTags(title string, tags []tagInfo) string {
+	lines := []string{fmt.Sprintf("%s (共 %d 个)", title, len(tags)), strings.Repeat("=", 50)}
+	for _, tag := range tags {
+		lines = append(lines, fmt.Sprintf("- %s: %d 个接口", tag.Name, tag.EndpointCount))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (a *App) listTags() (commandResult, error) {
+	openapi, err := a.exportOpenAPIMap(false, true)
+	if err != nil {
+		return commandResult{}, err
+	}
+	tags := collectTagInfos(openapi)
+	return commandResult{Text: formatTags("标签列表", tags), JSON: tagsJSON("tags", tags)}, nil
+}
+
+func hasTag(api endpointInfo, tag string) bool {
+	for _, value := range api.Tags {
+		if value == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) getAPIsByTag(tag string) (commandResult, error) {
 	if tag == "" {
-		return "", fail(2, "tag is required")
+		return commandResult{}, fail(2, "tag is required")
 	}
 	openapi, err := a.exportOpenAPIMap(false, true)
 	if err != nil {
-		return "", err
+		return commandResult{}, err
 	}
-	paths, _ := toMap(openapi["paths"])
-	var lines []string
-	for path, rawMethods := range paths {
-		methods, _ := toMap(rawMethods)
-		for method, rawOp := range methods {
-			op, _ := toMap(rawOp)
-			if values, ok := toSlice(op["tags"]); ok {
-				for _, value := range values {
-					if toString(value) == tag {
-						lines = append(lines, fmt.Sprintf("[%-6s] %-40s | %s", strings.ToUpper(method), path, defaultString(toString(op["summary"]), "未命名")))
-					}
-				}
-			}
+	var endpoints []endpointInfo
+	for _, api := range collectAPIEndpointInfos(openapi, "") {
+		if hasTag(api, tag) {
+			endpoints = append(endpoints, api)
 		}
 	}
-	sort.Strings(lines)
-	if len(lines) == 0 {
-		return "标签 '" + tag + "' 下没有接口", nil
+	items := make([]map[string]any, 0, len(endpoints))
+	var lines []string
+	for _, api := range endpoints {
+		items = append(items, endpointInfoJSON(api, false))
+		lines = append(lines, fmt.Sprintf("[%-6s] %-40s | %s", api.Method, api.Path, api.Title))
 	}
-	return strings.Join(append([]string{"标签: " + tag, fmt.Sprintf("接口列表 (共 %d 个)", len(lines)), strings.Repeat("=", 70)}, lines...), "\n"), nil
+	if len(lines) == 0 {
+		message := "标签 '" + tag + "' 下没有接口"
+		return commandResult{Text: message, JSON: map[string]any{"tag": tag, "endpoints": []map[string]any{}, "total": 0}}, nil
+	}
+	text := strings.Join(append([]string{"标签: " + tag, fmt.Sprintf("接口列表 (共 %d 个)", len(lines)), strings.Repeat("=", 70)}, lines...), "\n")
+	return commandResult{Text: text, JSON: map[string]any{"tag": tag, "endpoints": items, "total": len(items)}}, nil
 }
 
-func (a *App) listFolders() (string, error) {
-	return a.listTags()
+func (a *App) listFolders() (commandResult, error) {
+	openapi, err := a.exportOpenAPIMap(false, true)
+	if err != nil {
+		return commandResult{}, err
+	}
+	tags := collectTagInfos(openapi)
+	return commandResult{Text: formatTags("标签列表", tags), JSON: tagsJSON("folders", tags)}, nil
 }
 
 func (a *App) deleteEndpoint(path string, method string, confirm bool) (string, error) {
@@ -3377,34 +4298,53 @@ func responseProblems(op map[string]any, method string) []string {
 	return problems
 }
 
-func (a *App) checkAPIResponses(path string, method string) (string, error) {
+func sortEndpointItems(items []map[string]any) {
+	sort.Slice(items, func(i, j int) bool {
+		left := toString(items[i]["path"]) + " " + toString(items[i]["method"])
+		right := toString(items[j]["path"]) + " " + toString(items[j]["method"])
+		return left < right
+	})
+}
+
+func (a *App) checkAPIResponses(path string, method string) (commandResult, error) {
 	openapi, err := a.exportOpenAPIMap(false, true)
 	if err != nil {
-		return "", err
+		return commandResult{}, err
 	}
 	paths, _ := toMap(openapi["paths"])
 	pathItem, ok := toMap(paths[path])
 	if !ok {
-		return "未找到路径为 " + path + " 的接口", nil
+		message := "未找到路径为 " + path + " 的接口"
+		return notFoundResult(message, map[string]any{"method": strings.ToUpper(method), "path": path}), nil
 	}
 	op, ok := toMap(pathItem[strings.ToLower(method)])
 	if !ok {
-		return "未找到 " + strings.ToUpper(method) + " " + path + " 接口", nil
+		message := "未找到 " + strings.ToUpper(method) + " " + path + " 接口"
+		return notFoundResult(message, map[string]any{"method": strings.ToUpper(method), "path": path}), nil
 	}
 	problems := responseProblems(op, strings.ToLower(method))
-	if len(problems) == 0 {
-		return "响应定义完整: " + strings.ToUpper(method) + " " + path, nil
+	payload := map[string]any{
+		"found":    true,
+		"method":   strings.ToUpper(method),
+		"path":     path,
+		"title":    defaultString(toString(op["summary"]), "未命名"),
+		"valid":    len(problems) == 0,
+		"problems": problems,
 	}
-	return "响应定义不完整: " + strings.ToUpper(method) + " " + path + "\n- " + strings.Join(problems, "\n- "), nil
+	if len(problems) == 0 {
+		return commandResult{Text: "响应定义完整: " + strings.ToUpper(method) + " " + path, JSON: payload}, nil
+	}
+	return commandResult{Text: "响应定义不完整: " + strings.ToUpper(method) + " " + path + "\n- " + strings.Join(problems, "\n- "), JSON: payload}, nil
 }
 
-func (a *App) auditAllAPIResponses(tag string, showComplete bool) (string, error) {
+func (a *App) auditAllAPIResponses(tag string, showComplete bool) (commandResult, error) {
 	openapi, err := a.exportOpenAPIMap(false, true)
 	if err != nil {
-		return "", err
+		return commandResult{}, err
 	}
 	paths, _ := toMap(openapi["paths"])
 	var problemLines, completeLines []string
+	var problemItems, completeItems []map[string]any
 	for path, rawMethods := range paths {
 		methods, _ := toMap(rawMethods)
 		for method, rawOp := range methods {
@@ -3428,28 +4368,50 @@ func (a *App) auditAllAPIResponses(tag string, showComplete bool) (string, error
 			}
 			problems := responseProblems(op, method)
 			line := fmt.Sprintf("%s %s | %s", strings.ToUpper(method), path, defaultString(toString(op["summary"]), "未命名"))
+			item := map[string]any{
+				"method":   strings.ToUpper(method),
+				"path":     path,
+				"title":    defaultString(toString(op["summary"]), "未命名"),
+				"problems": problems,
+			}
 			if len(problems) > 0 {
 				problemLines = append(problemLines, line+": "+strings.Join(problems, ", "))
+				problemItems = append(problemItems, item)
 			} else if showComplete {
 				completeLines = append(completeLines, line)
+				item["problems"] = []string{}
+				completeItems = append(completeItems, item)
 			}
 		}
 	}
 	sort.Strings(problemLines)
 	sort.Strings(completeLines)
+	sortEndpointItems(problemItems)
+	sortEndpointItems(completeItems)
 	lines := []string{fmt.Sprintf("响应审计: %d 个问题接口", len(problemLines)), strings.Repeat("=", 70)}
 	lines = append(lines, problemLines...)
 	if showComplete {
 		lines = append(lines, "", fmt.Sprintf("完整接口: %d 个", len(completeLines)))
 		lines = append(lines, completeLines...)
 	}
-	return strings.Join(lines, "\n"), nil
+	return commandResult{
+		Text: strings.Join(lines, "\n"),
+		JSON: map[string]any{
+			"tag":            tag,
+			"valid":          len(problemItems) == 0,
+			"problem_count":  len(problemItems),
+			"problems":       problemItems,
+			"show_complete":  showComplete,
+			"complete_count": len(completeItems),
+			"complete_items": completeItems,
+		},
+	}, nil
 }
 
-func (a *App) checkPathNaming(style string) (string, error) {
+func (a *App) checkPathNaming(style string) (commandResult, error) {
 	openapi, err := a.exportOpenAPIMap(false, true)
 	if err != nil {
-		return "", err
+		return commandResult{}, err
 	}
 	paths, _ := toMap(openapi["paths"])
 	var bad []string
@@ -3467,7 +4429,7 @@ func (a *App) checkPathNaming(style string) (string, error) {
 			case "camelCase":
 				ok = camelSegmentRE.MatchString(segment)
 			default:
-				return "", fail(2, "unsupported style: %s", style)
+				return commandResult{}, fail(2, "unsupported style: %s", style)
 			}
 			if !ok {
 				bad = append(bad, path)
@@ -3476,19 +4438,25 @@ func (a *App) checkPathNaming(style string) (string, error) {
 		}
 	}
 	sort.Strings(bad)
-	if len(bad) == 0 {
-		return "所有路径符合 " + style + " 命名规范", nil
+	issues := make([]map[string]any, 0, len(bad))
+	for _, path := range bad {
+		issues = append(issues, map[string]any{"path": path})
 	}
-	return fmt.Sprintf("发现 %d 个路径不符合 %s:\n- %s", len(bad), style, strings.Join(bad, "\n- ")), nil
+	payload := map[string]any{"style": style, "valid": len(bad) == 0, "issues": issues, "issue_count": len(issues)}
+	if len(bad) == 0 {
+		return commandResult{Text: "所有路径符合 " + style + " 命名规范", JSON: payload}, nil
+	}
+	return commandResult{Text: fmt.Sprintf("发现 %d 个路径不符合 %s:\n- %s", len(bad), style, strings.Join(bad, "\n- ")), JSON: payload}, nil
 }
 
-func (a *App) checkResponseConsistency() (string, error) {
+func (a *App) checkResponseConsistency() (commandResult, error) {
 	openapi, err := a.exportOpenAPIMap(false, true)
 	if err != nil {
-		return "", err
+		return commandResult{}, err
 	}
 	paths, _ := toMap(openapi["paths"])
 	var missing []string
+	var issues []map[string]any
 	for path, rawMethods := range paths {
 		methods, _ := toMap(rawMethods)
 		for method, rawOp := range methods {
@@ -3499,12 +4467,20 @@ func (a *App) checkResponseConsistency() (string, error) {
 			problems := responseProblems(op, method)
 			if len(problems) > 0 {
 				missing = append(missing, fmt.Sprintf("%s %s: %s", strings.ToUpper(method), path, strings.Join(problems, ", ")))
+				issues = append(issues, map[string]any{
+					"method":   strings.ToUpper(method),
+					"path":     path,
+					"title":    defaultString(toString(op["summary"]), "未命名"),
+					"problems": problems,
+				})
 			}
 		}
 	}
 	sort.Strings(missing)
+	sortEndpointItems(issues)
+	payload := map[string]any{"valid": len(issues) == 0, "issues": issues, "issue_count": len(issues)}
 	if len(missing) == 0 {
-		return "响应格式检查通过", nil
+		return commandResult{Text: "响应格式检查通过", JSON: payload}, nil
 	}
-	return fmt.Sprintf("响应格式存在不一致或缺失 (%d 个):\n- %s", len(missing), strings.Join(missing, "\n- ")), nil
+	return commandResult{Text: fmt.Sprintf("响应格式存在不一致或缺失 (%d 个):\n- %s", len(missing), strings.Join(missing, "\n- ")), JSON: payload}, nil
 }

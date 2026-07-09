@@ -9,6 +9,60 @@ Use `apifox-cli` as a command-line tool. Do not call MCP tools, do not use `list
 
 The purpose of this skill is to let AI read code and requirements, write structured Apifox/OpenAPI JSON specs, validate them locally, dry-run the CLI command, and then apply them to Apifox.
 
+## Capability Boundaries
+
+Use the canonical command surface in new work:
+
+- Endpoint writes: `api create`, `api update`, `api upsert`
+- Schema writes: `schema create`, `schema update`
+- Batch writes: `apply-docs`, `generate-crud`
+- Discovery/audit: `api`, `schema`, `tag`, `folder`, `audit`, `versions`, `request`
+
+Treat `create-endpoint`, `update-endpoint`, and `upsert-endpoint` as legacy aliases only. Do not use them in new instructions or scripts.
+
+Current write boundaries:
+
+- Supported writes: create/update/upsert endpoints, create/update schemas, generate CRUD endpoint docs, import OpenAPI/Postman, replace endpoint tags.
+- Not supported as direct writes: delete endpoint, delete schema, create/delete folder. Those commands explain the limitation instead of mutating Apifox. Prefer tags for folder-like organization.
+
+`api upsert` imports a generated OpenAPI operation with overwrite behavior. Treat it as replacing the documented operation, not as a field-level patch.
+
+## Machine Contract
+
+Every command and subcommand should answer `--help` without requiring credentials, files, or network access:
+
+```bash
+apifox-cli validate-endpoint --help
+apifox-cli api upsert --help
+apifox-cli apply-docs --help
+```
+
+For JSON-file inputs, pass `--file -` to read stdin:
+
+```bash
+apifox-cli docs-template | apifox-cli validate-docs --file -
+```
+
+Validation commands support machine-readable output:
+
+```bash
+apifox-cli validate-endpoint --file .apifox-endpoint.json --json
+```
+
+The validation JSON shape is:
+
+```json
+{"valid": false, "errors": ["field is required"]}
+```
+
+Invalid validation exits with code `1`. CLI usage errors exit with code `2`. Do not continue after either failure unless you have fixed the input.
+
+Mutating commands support `--dry-run` and `--print-payload`. For `apply-docs --dry-run`, inspect the printed `operations` array before writing. Real `apply-docs` stops at the first failed operation by default; with `--json`, it prints summary counts and per-operation results. Use `--continue-on-error` only when the user explicitly wants a full failure inventory.
+
+Write commands such as `api upsert --json`, `schema create --json`, and `generate-crud --json` return structured fields including `kind`, `action`, identity fields, `created`, `updated`, `counters`, and `import_result`. Use those fields for scripts instead of parsing human-readable success text.
+
+Discovery and audit commands support structured `--json` output. `api`, `schema`, `tag`, `folder`, and `audit` return typed fields such as `endpoints`, `schemas`, `tags`, `valid`, `problems`, and `issues`. Simple status commands may still wrap text as `{"result": "..."}`; `request --json` returns the raw Apifox JSON result.
+
 ## Setup
 
 Resolve the command before doing work:
@@ -32,6 +86,39 @@ apifox-cli config check
 Require `APIFOX_TOKEN` and `APIFOX_PROJECT_ID`, or pass `--token` and `--project-id` before the subcommand. Keep credentials in environment variables, not JSON files.
 
 For multi-field AI-generated inputs, write hidden JSON files such as `.apifox-docs.json`, `.apifox-endpoint.json`, `.apifox-crud.json`, `.apifox-schema.json`, or `.apifox-request.json`.
+
+## Reusable Local Artifacts
+
+When the target project contains `scripts/generate_apifox_docs.py`, treat it as the reusable generator for rebuilding Apifox docs from routes and DTOs. Do not hand-edit the generated `.apifox-docs.json` as the source of truth unless the generator is missing or wrong.
+
+Local reusable outputs:
+
+- `scripts/generate_apifox_docs.py`: regenerates specs from routes and DTOs.
+- `.apifox-docs.json`: validated batch docs output. Keep it hidden and gitignored unless the user explicitly asks to commit it.
+
+After code changes, regenerate and validate:
+
+```bash
+python3 scripts/generate_apifox_docs.py
+apifox-cli validate-docs --file .apifox-docs.json
+```
+
+Before a real write, run a dry-run preview, then apply with credentials:
+
+```bash
+apifox-cli apply-docs --file .apifox-docs.json --dry-run
+APIFOX_TOKEN=... APIFOX_PROJECT_ID=8555669 apifox-cli apply-docs --file .apifox-docs.json
+```
+
+For broad updates, write in batches of about 15 operations to reduce the chance of Apifox returning 403:
+
+```bash
+apifox-cli apply-docs --file .apifox-docs.json --batch-size 15 --dry-run
+APIFOX_TOKEN=... APIFOX_PROJECT_ID=8555669 apifox-cli apply-docs --file .apifox-docs.json --offset 0 --limit 15
+APIFOX_TOKEN=... APIFOX_PROJECT_ID=8555669 apifox-cli apply-docs --file .apifox-docs.json --offset 15 --limit 15
+```
+
+If 403 recurs, stop, keep the generated file for inspection, and report the exact CLI output instead of retrying blindly.
 
 ## Main Workflow
 
