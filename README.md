@@ -26,14 +26,14 @@ The Windows npm package bundles the Python MCP runtime and Go CLI as standalone 
 Python, uv, and Go are not required at runtime. After the scoped package is published:
 
 ```powershell
-npm install -g @iwen-conf/apifox-mcp
+npm install -g @yanzhang123/apifox-mcp
 apifox-mcp --help
 apifox-cli --version
 ```
 
 The npm package currently targets Windows x64 only. Tag builds attach the `.tgz` to the GitHub
 Release; registry publishing is an explicit manual workflow and requires the repository
-`NPM_TOKEN` secret plus publish permission for the `@iwen-conf` scope.
+`NPM_TOKEN` secret plus publish permission for the `@yanzhang123` scope.
 
 ### Recommended: bundled MCP wheel
 

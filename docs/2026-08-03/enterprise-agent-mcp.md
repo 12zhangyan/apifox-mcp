@@ -307,7 +307,7 @@ flowchart TD
 - LiveExternal 实测后修正配置检查假成功、接口/路径计数混淆和 `info.title` 字段语义；新增单次导出的项目概览工具与 `VALIDATION_FAILED` 分类。
 - 正式发布改为平台专用 bundled wheel：Windows/Linux/macOS 的 x64/ARM64 wheel 各自内置一个 Go CLI，运行时优先自动发现内置二进制，最终用户无需安装 Go。
 - release workflow 校验 wheel 平台标签、唯一 CLI 文件、非空内容和 Unix 可执行权限，再把产物附加到 GitHub Release；源码开发仍允许 `APIFOX_CLI_PATH` 覆盖。
-- 新增 Windows x64 npm 分发：`@iwen-conf/apifox-mcp` 内含 PyInstaller 冻结的 MCP 和 Go CLI 两个 exe，Node 启动器绑定 CLI 路径并透传 stdio；用户运行时无需 Python、uv 或 Go。
+- 新增 Windows x64 npm 分发：`@yanzhang123/apifox-mcp` 内含 PyInstaller 冻结的 MCP 和 Go CLI 两个 exe，Node 启动器绑定 CLI 路径并透传 stdio；用户运行时无需 Python、uv 或 Go。
 - Windows CI 和 tag release 会执行 npm pack、独立安装、冻结 MCP 协议发现；registry 发布保持手动并要求 `NPM_TOKEN`，避免普通 push/PR 触发外部发布。
 
 ### 验证结果

@@ -72,7 +72,7 @@ For Go projects, do not make Swagger marker comments the primary API documentati
 - Go CLI releases use GoReleaser via `.github/workflows/release.yml`.
 - Enterprise MCP releases also build platform-specific wheels for Windows, Linux, and macOS on x64/ARM64. Each wheel must bundle exactly one matching `apifox-cli` binary and must not use the universal `py3-none-any` tag.
 - Published wheels must pass `scripts/verify_bundled_wheel.py`; runtime lookup prefers `APIFOX_CLI_PATH`, then the bundled binary, then `PATH`.
-- The scoped npm package `@iwen-conf/apifox-mcp` currently targets Windows x64 and bundles standalone `apifox-mcp.exe` plus `apifox-cli.exe`; runtime installation must not require Python, uv, or Go.
+- The scoped npm package `@yanzhang123/apifox-mcp` currently targets Windows x64 and bundles standalone `apifox-mcp.exe` plus `apifox-cli.exe`; runtime installation must not require Python, uv, or Go.
 - npm registry publication is manual through `.github/workflows/npm-publish.yml`; never place an npm token in repository files or automatic pull-request workflows.
 - Homebrew publishing targets `iwen-conf/homebrew-tap` and writes `Casks/apifox-cli.rb`.
 - The source repository must have `HOMEBREW_TAP_GITHUB_TOKEN` configured as an Actions secret before pushing release tags.

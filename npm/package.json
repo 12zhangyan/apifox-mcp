@@ -1,5 +1,5 @@
 {
-  "name": "@iwen-conf/apifox-mcp",
+  "name": "@yanzhang123/apifox-mcp",
   "version": "0.2.0",
   "description": "Enterprise Apifox MCP server for Windows with bundled runtimes",
   "license": "MIT",

@@ -6,7 +6,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 if (process.platform !== "win32" || process.arch !== "x64") {
-  console.error(`@iwen-conf/apifox-mcp supports Windows x64; got ${process.platform}/${process.arch}`);
+  console.error(`@yanzhang123/apifox-mcp supports Windows x64; got ${process.platform}/${process.arch}`);
   process.exit(1);
 }
 
@@ -16,7 +16,7 @@ const cliExecutable = path.join(packageRoot, "vendor", "apifox-cli.exe");
 
 for (const executable of [mcpExecutable, cliExecutable]) {
   if (!fs.existsSync(executable)) {
-    console.error(`Incomplete @iwen-conf/apifox-mcp installation: missing ${executable}`);
+    console.error(`Incomplete @yanzhang123/apifox-mcp installation: missing ${executable}`);
     process.exit(1);
   }
 }
