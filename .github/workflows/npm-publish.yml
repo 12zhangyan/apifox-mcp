@@ -1,52 +1,98 @@
 name: publish npm
 
 on:
+  workflow_run:
+    workflows:
+      - ci
+    types:
+      - completed
+    branches:
+      - main
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing v* tag whose npm package should be published
-        required: true
-        type: string
 
 permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
 jobs:
   publish:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main')
     runs-on: windows-latest
     steps:
-      - name: Checkout release tag
-        uses: actions/checkout@v5
+      - name: Checkout tested main commit
+        uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Set up npm trusted-publishing client
+        run: |
+          npm install --global npm@12
+          npm --version
+
+      - name: Resolve package version
+        id: package
+        shell: powershell
+        run: |
+          $manifest = Get-Content -LiteralPath npm\package.json -Raw | ConvertFrom-Json
+          if (-not $manifest.name -or -not $manifest.version) {
+            throw "npm/package.json must define name and version"
+          }
+
+          $packageSpec = "$($manifest.name)@$($manifest.version)"
+          $lookupOutput = npm.cmd view $packageSpec version --json 2>&1
+          $lookupExitCode = $LASTEXITCODE
+          $lookupText = $lookupOutput | Out-String
+
+          "name=$($manifest.name)" >> $env:GITHUB_OUTPUT
+          "version=$($manifest.version)" >> $env:GITHUB_OUTPUT
+
+          if ($lookupExitCode -eq 0) {
+            "published=true" >> $env:GITHUB_OUTPUT
+            "Package $packageSpec already exists; publication will be skipped." >> $env:GITHUB_STEP_SUMMARY
+          } elseif ($lookupText -match "E404|404 Not Found") {
+            "published=false" >> $env:GITHUB_OUTPUT
+            "Package $packageSpec is new and will be published after verification." >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            throw "Unable to query npm registry for ${packageSpec}: $lookupText"
+          }
 
       - name: Set up Go
+        if: steps.package.outputs.published == 'false'
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
-      - name: Set up Node
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
-
       - name: Set up uv
+        if: steps.package.outputs.published == 'false'
         uses: astral-sh/setup-uv@v7
 
       - name: Sync build dependencies
+        if: steps.package.outputs.published == 'false'
         run: uv sync --locked --all-groups
 
       - name: Build and verify Windows npm payload
+        if: steps.package.outputs.published == 'false'
         shell: powershell
         run: |
-          $version = "${{ inputs.tag }}".TrimStart("v")
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_npm.ps1 -Version $version
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_npm.ps1 -Version "${{ steps.package.outputs.version }}"
           uv run python scripts\smoke_windows_npm_mcp.py npm\bin\apifox-mcp.cjs
 
       - name: Publish scoped npm package
+        if: steps.package.outputs.published == 'false'
         working-directory: npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --provenance
+        run: npm publish --access public

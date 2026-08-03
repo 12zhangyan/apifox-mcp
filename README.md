@@ -31,9 +31,13 @@ apifox-mcp --help
 apifox-cli --version
 ```
 
-The npm package currently targets Windows x64 only. Tag builds attach the `.tgz` to the GitHub
-Release; registry publishing is an explicit manual workflow and requires the repository
-`NPM_TOKEN` secret plus publish permission for the `@yanzhang123` scope.
+The npm package currently targets Windows x64 only. After CI succeeds for a push to `main`,
+`.github/workflows/npm-publish.yml` publishes a new `npm/package.json` version automatically.
+Already-published versions are skipped, so every release PR must bump the version before merge.
+
+Automatic publishing uses npm Trusted Publishing (GitHub OIDC), not a long-lived `NPM_TOKEN`.
+Configure the package once at npmjs.com with GitHub user `12zhangyan`, repository `apifox-mcp`,
+workflow `npm-publish.yml`, and the `npm publish` action allowed.
 
 ### Recommended: bundled MCP wheel
 
