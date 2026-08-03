@@ -16,7 +16,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 COPY --from=cli-build /out/apifox-cli /usr/local/bin/apifox-cli
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md hatch_build.py ./
 COPY apifox_mcp/ ./apifox_mcp/
 RUN pip install --no-cache-dir . \
     && addgroup --system apifox \
