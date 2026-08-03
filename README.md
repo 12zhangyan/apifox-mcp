@@ -1,10 +1,12 @@
-# Apifox CLI
+# Apifox Enterprise MCP + CLI
 
 [![Go](https://img.shields.io/badge/Go-CLI-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Apifox](https://img.shields.io/badge/Apifox-OpenAPI-orange)](https://apifox.com/)
 
-`apifox-cli` is now a Go command line tool plus an AI Skill for writing Apifox/OpenAPI documentation. The CLI replaces the old tool-call workflow: agents and scripts should call `apifox-cli` commands directly.
+This repository provides an enterprise MCP server for Agents and a Go CLI for deterministic Apifox/OpenAPI operations. `apifox-mcp` is the typed, policy-controlled Agent surface; `apifox-cli` remains the single execution core and direct scripting interface.
+
+The MCP server does not duplicate Apifox HTTP logic. It validates tool input, enforces read/plan/apply policy, invokes `apifox-cli` through stdin, returns structured results, and records redacted audit events.
 
 The main use case is not importing an existing OpenAPI file. The expected workflow is:
 
@@ -18,6 +20,41 @@ For Go projects, do not use Swagger marker comments as the primary API documenta
 
 ## Install
 
+### Recommended: bundled MCP wheel
+
+Release wheels include the matching Go CLI binary. End users do not need a Go toolchain or
+`APIFOX_CLI_PATH`; install the wheel for the current OS/architecture and configure credentials.
+
+```powershell
+# Windows x64 example; replace VERSION with a published release version.
+uv tool install "https://github.com/iwen-conf/apifox-mcp/releases/download/vVERSION/apifox_cli-VERSION-py3-none-win_amd64.whl"
+apifox-mcp --help
+```
+
+Published wheel targets are Windows, Linux, and macOS on x64/ARM64. The MCP resolves the CLI in
+this order: explicit `APIFOX_CLI_PATH`, CLI bundled in the wheel, then `apifox-cli` on `PATH`.
+
+### Docker
+
+Docker also packages both the MCP server and Go CLI, so the host does not need Go:
+
+```bash
+docker build -t apifox-mcp .
+docker run --rm -i --env-file .env apifox-mcp
+```
+
+### Source development
+
+Source checkouts do not commit generated binaries. Developers must build the CLI with Go or set
+`APIFOX_CLI_PATH` to an existing binary:
+
+```bash
+uv sync --locked
+go build -o ./bin/apifox-cli ./cmd/apifox-cli
+export APIFOX_CLI_PATH="$PWD/bin/apifox-cli"
+uv run apifox-mcp --help
+```
+
 Homebrew:
 
 ```bash
@@ -27,7 +64,7 @@ brew install --cask apifox-cli
 apifox-cli --version
 ```
 
-From source:
+Build only the CLI from source:
 
 ```bash
 go build -o ./bin/apifox-cli ./cmd/apifox-cli
@@ -54,6 +91,46 @@ apifox-cli config check
 
 Use `--base-url` only when your Apifox deployment is not `https://api.apifox.com`.
 
+MCP writes default to plan-only. A real apply requires an explicit server setting:
+
+```bash
+export APIFOX_MCP_WRITE_MODE=plan   # default: inspect and dry-run only
+# export APIFOX_MCP_WRITE_MODE=apply # enable only in an approved environment
+```
+
+## Enterprise MCP Tools
+
+Read-only discovery:
+
+- `apifox_project_check`
+- `apifox_project_overview` (single-export counts and bounded samples)
+- `apifox_api_list`, `apifox_api_get`
+- `apifox_schema_list`, `apifox_schema_get`
+- `apifox_tag_list`, `apifox_tag_apis`
+- `apifox_audit`, `apifox_export_openapi`
+
+Controlled changes:
+
+1. Call `apifox_change_plan` with a change kind and structured spec.
+2. Inspect its dry-run preview, payload hash, expiry, and plan ID.
+3. Call `apifox_change_apply` with only that plan ID. The server rejects disabled, expired, changed, cross-project, busy, or already-consumed plans.
+
+Supported change kinds are `endpoint_create`, `endpoint_update`, `endpoint_upsert`, `schema_create`, `schema_update`, `apply_docs`, `generate_crud`, and `tags_replace`.
+
+Start stdio (default):
+
+```bash
+uv run apifox-mcp
+```
+
+Streamable HTTP is opt-in and binds to loopback by default:
+
+```bash
+uv run apifox-mcp --transport streamable-http --host 127.0.0.1 --port 8000
+```
+
+Non-loopback HTTP refuses to start unless bearer verification, issuer/resource URLs, and allowed Host/Origin lists are configured.
+
 ## CLI Commands
 
 Use the canonical command surface in new scripts: `api create|update|upsert`, `schema create|update`, `apply-docs`, and `generate-crud`. The older `create-endpoint`, `update-endpoint`, and `upsert-endpoint` commands are legacy aliases for compatibility.
@@ -66,6 +143,7 @@ Project and discovery:
 
 ```bash
 apifox-cli config check
+apifox-cli overview --limit 10 --json
 apifox-cli versions
 apifox-cli api list --limit 20
 apifox-cli api get --method GET --path /orders

@@ -5,7 +5,7 @@ description: Write and maintain Apifox/OpenAPI documentation through the apifox-
 
 # Apifox CLI
 
-Use `apifox-cli` as a command-line tool. Do not call MCP tools, do not use `list-tools`, `describe`, or `call`, and do not use Swagger marker comments as the primary Go documentation path.
+Use `apifox-cli` as the deterministic execution and scripting surface. When the enterprise `apifox-mcp` server is available and the user wants Agent-managed changes, prefer its read → plan → apply workflow; use this CLI skill for direct shell workflows, local generation, validation, troubleshooting, and fallback. Do not use Swagger marker comments as the primary Go documentation path.
 
 The purpose of this skill is to let AI read code and requirements, write structured Apifox/OpenAPI JSON specs, validate them locally, dry-run the CLI command, and then apply them to Apifox.
 

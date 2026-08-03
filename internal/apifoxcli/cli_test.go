@@ -2,6 +2,7 @@ package apifoxcli
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -90,6 +91,95 @@ func TestCommandHelpDoesNotRequireRuntimeInputs(t *testing.T) {
 				t.Fatalf("help output missing %q\noutput:\n%s", tc.want, out)
 			}
 		})
+	}
+}
+
+func TestConfigCheckJSONFailsWhenCredentialsAreMissing(t *testing.T) {
+	t.Setenv("APIFOX_TOKEN", "")
+	t.Setenv("APIFOX_PROJECT_ID", "")
+
+	out, err := captureRun(t, "config", "check", "--json")
+	if err == nil {
+		t.Fatal("expected missing credentials to fail")
+	}
+	var commandErr commandError
+	if !errors.As(err, &commandErr) || commandErr.Code != 2 {
+		t.Fatalf("expected command error code 2, got %#v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("config check output should be JSON: %v\n%s", err, out)
+	}
+	if payload["configured"] != false || payload["connected"] != false {
+		t.Fatalf("unexpected config status: %#v", payload)
+	}
+	errorInfo := payload["error"].(map[string]any)
+	if errorInfo["code"] != "MISSING_CREDENTIALS" {
+		t.Fatalf("unexpected error payload: %#v", errorInfo)
+	}
+}
+
+func TestConfigCheckCountsEndpointsSeparatelyFromPaths(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"info":{"title":"Test project"},
+			"paths":{"/orders":{"get":{"summary":"List"},"post":{"summary":"Create"}}},
+			"components":{"schemas":{"Order":{"type":"object"}}}
+		}`)
+	}))
+	defer server.Close()
+
+	app := App{
+		Config: Config{Token: "test-token", ProjectID: "123", BaseURL: server.URL},
+		Client: server.Client(),
+	}
+	result, err := app.checkConfig()
+	if err != nil {
+		t.Fatalf("expected config check to succeed, got %v", err)
+	}
+	payload := result.JSON.(map[string]any)
+	if payload["endpoint_count"] != 2 || payload["path_count"] != 1 {
+		t.Fatalf("unexpected endpoint/path counts: %#v", payload)
+	}
+	if payload["schema_count"] != 1 {
+		t.Fatalf("unexpected schema count: %#v", payload)
+	}
+}
+
+func TestProjectOverviewUsesOneExportAndReturnsBoundedSamples(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"info":{"title":"Test docs"},
+			"paths":{"/orders":{"get":{"summary":"List","tags":["Orders"]},"post":{"summary":"Create","tags":["Orders"]}}},
+			"components":{"schemas":{"Order":{"type":"object"},"OrderList":{"type":"array"}}}
+		}`)
+	}))
+	defer server.Close()
+
+	app := App{
+		Config: Config{Token: "test-token", ProjectID: "123", BaseURL: server.URL},
+		Client: server.Client(),
+	}
+	result, err := app.projectOverview(1)
+	if err != nil {
+		t.Fatalf("expected overview to succeed, got %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("overview should export exactly once, got %d requests", requests)
+	}
+	payload := result.JSON.(map[string]any)
+	counts := payload["counts"].(map[string]any)
+	if counts["endpoints"] != 2 || counts["paths"] != 1 || counts["schemas"] != 2 {
+		t.Fatalf("unexpected overview counts: %#v", counts)
+	}
+	samples := payload["samples"].(map[string]any)
+	if len(samples["endpoints"].([]map[string]any)) != 1 || len(samples["schemas"].([]map[string]any)) != 1 {
+		t.Fatalf("overview samples should respect limit: %#v", samples)
 	}
 }
 

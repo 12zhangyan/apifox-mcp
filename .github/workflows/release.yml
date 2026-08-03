@@ -31,3 +31,104 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+  bundled-wheels:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-amd64
+            goos: linux
+            goarch: amd64
+            wheel_tag: py3-none-manylinux_2_17_x86_64
+            binary: apifox-cli
+          - id: linux-arm64
+            goos: linux
+            goarch: arm64
+            wheel_tag: py3-none-manylinux_2_17_aarch64
+            binary: apifox-cli
+          - id: windows-amd64
+            goos: windows
+            goarch: amd64
+            wheel_tag: py3-none-win_amd64
+            binary: apifox-cli.exe
+          - id: windows-arm64
+            goos: windows
+            goarch: arm64
+            wheel_tag: py3-none-win_arm64
+            binary: apifox-cli.exe
+          - id: macos-amd64
+            goos: darwin
+            goarch: amd64
+            wheel_tag: py3-none-macosx_10_15_x86_64
+            binary: apifox-cli
+          - id: macos-arm64
+            goos: darwin
+            goarch: arm64
+            wheel_tag: py3-none-macosx_11_0_arm64
+            binary: apifox-cli
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build platform CLI
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          CLI_BINARY: ${{ matrix.binary }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build -trimpath \
+            -ldflags="-s -w -X github.com/iwen-conf/apifox-mcp/internal/apifoxcli.version=${VERSION} -X github.com/iwen-conf/apifox-mcp/internal/apifoxcli.commit=${GITHUB_SHA} -X github.com/iwen-conf/apifox-mcp/internal/apifoxcli.date=${BUILD_DATE}" \
+            -o "build/bundled/${CLI_BINARY}" \
+            ./cmd/apifox-cli
+
+      - name: Build platform wheel
+        env:
+          APIFOX_BUNDLED_CLI: build/bundled/${{ matrix.binary }}
+          APIFOX_WHEEL_TAG: ${{ matrix.wheel_tag }}
+        run: uv build --wheel --out-dir dist
+
+      - name: Verify bundled wheel
+        run: >-
+          python scripts/verify_bundled_wheel.py
+          dist/*.whl
+          --tag ${{ matrix.wheel_tag }}
+          --binary ${{ matrix.binary }}
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apifox-mcp-wheel-${{ matrix.id }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish-wheels:
+    needs:
+      - goreleaser
+      - bundled-wheels
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v5
+        with:
+          pattern: apifox-mcp-wheel-*
+          path: dist
+          merge-multiple: true
+
+      - name: Attach wheels to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/*.whl --clobber

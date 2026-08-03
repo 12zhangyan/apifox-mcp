@@ -22,14 +22,64 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
       - name: Test Go CLI
         run: go test ./...
 
       - name: Build Go CLI
-        run: go build -o /tmp/apifox-mcp ./cmd/apifox-mcp
+        run: go build -o /tmp/apifox-cli ./cmd/apifox-cli
 
       - name: Smoke test Go CLI
         run: |
-          /tmp/apifox-mcp --help
-          /tmp/apifox-mcp --version
-          /tmp/apifox-mcp docs-template | /tmp/apifox-mcp validate-docs --file -
+          /tmp/apifox-cli --help
+          /tmp/apifox-cli --version
+          /tmp/apifox-cli docs-template | /tmp/apifox-cli validate-docs --file -
+
+      - name: Build bundled Linux wheel
+        env:
+          APIFOX_BUNDLED_CLI: /tmp/apifox-cli
+          APIFOX_WHEEL_TAG: py3-none-manylinux_2_17_x86_64
+        run: uv build --wheel --out-dir dist
+
+      - name: Verify bundled Linux wheel
+        run: >-
+          python scripts/verify_bundled_wheel.py
+          dist/*.whl
+          --tag py3-none-manylinux_2_17_x86_64
+          --binary apifox-cli
+
+  python-mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync locked dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Lint enterprise MCP
+        run: uv run ruff check apifox_mcp tests hatch_build.py scripts
+
+      - name: Test enterprise MCP
+        run: uv run pytest
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build enterprise MCP image
+        run: docker build -t apifox-mcp:test .
+
+      - name: Smoke test packaged entrypoints
+        run: |
+          docker run --rm --entrypoint apifox-cli apifox-mcp:test --version
+          docker run --rm apifox-mcp:test --help

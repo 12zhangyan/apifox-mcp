@@ -1,7 +1,7 @@
 [project]
 name = "apifox-cli"
-version = "0.1.0"
-description = "A Go CLI and AI Skill for writing Apifox/OpenAPI documentation"
+version = "0.2.0"
+description = "Enterprise MCP server and Go CLI for managing Apifox/OpenAPI documentation"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -21,9 +21,11 @@ classifiers = [
 ]
 
 dependencies = [
-    "mcp[cli]>=1.0.0",
-    "requests>=2.31.0",
+    "mcp[cli]>=2.0.0,<3",
 ]
+
+[project.scripts]
+apifox-mcp = "apifox_mcp.main:main"
 
 [project.urls]
 Homepage = "https://github.com/iwen-conf/apifox-mcp"
@@ -34,8 +36,25 @@ Issues = "https://github.com/iwen-conf/apifox-mcp/issues"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<9",
+    "pytest-cov>=6,<8",
+    "ruff>=0.12,<1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["apifox_mcp"]
+
+[tool.hatch.build.hooks.custom]

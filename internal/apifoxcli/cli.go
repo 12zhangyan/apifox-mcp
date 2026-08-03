@@ -118,6 +118,8 @@ func run(args []string) error {
 	switch command {
 	case "config":
 		return app.cmdConfig(commandArgs)
+	case "overview":
+		return app.cmdOverview(commandArgs)
 	case "api":
 		return app.cmdAPI(commandArgs)
 	case "schema":
@@ -173,6 +175,7 @@ CLI for AI-authored Apifox/OpenAPI documentation.
 Commands:
   version               Print CLI version
   config check          Check Apifox credentials and project connectivity
+  overview              Get project counts and samples in one export
   api list              List HTTP endpoints
   api get               Show one HTTP endpoint
   api create            Create an endpoint from JSON spec
@@ -217,10 +220,20 @@ var commandHelpTexts = map[string]string{
 
 Check APIFOX_TOKEN/APIFOX_PROJECT_ID and project connectivity.
 Options:
-  --json        Print {"result": "..."} for scripts
+  --json        Print structured configured/connected status and project counts
   -o, --output  Write output to FILE
 Example:
   apifox-cli config check --json`,
+
+	"overview": `usage: apifox-cli overview [--limit N] [--json] [-o FILE]
+
+Export the project once and return endpoint, path, schema, and tag counts with samples.
+Options:
+  --limit       Maximum sample items per category, default 10
+  --json        Print structured project overview output
+  -o, --output  Write output to FILE
+Example:
+  apifox-cli overview --limit 5 --json`,
 
 	"api list": `usage: apifox-cli api list [--keyword TEXT] [--limit N] [--json] [-o FILE]
 
@@ -1935,17 +1948,39 @@ func (a *App) cmdConfig(args []string) error {
 		if err != nil {
 			return err
 		}
-		result, err := a.checkConfig()
-		if err != nil {
+		result, checkErr := a.checkConfig()
+		if err := printCommandResult(result, opts); err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		return checkErr
 	case "-h", "--help", "help":
 		fmt.Println("usage: apifox-cli config check [--json] [-o FILE]")
 		return nil
 	default:
 		return fail(2, "unknown config command %q", args[0])
 	}
+}
+
+func (a *App) cmdOverview(args []string) error {
+	if wantsHelp(args) {
+		return commandHelp("overview")
+	}
+	opts, _, err := parseOptions(args, map[string]bool{"limit": true, "output": true}, map[string]string{"o": "output"})
+	if err != nil {
+		return err
+	}
+	limit, err := optInt(opts, "limit", 10)
+	if err != nil {
+		return err
+	}
+	if limit <= 0 || limit > 100 {
+		return fail(2, "--limit must be between 1 and 100")
+	}
+	result, err := a.projectOverview(limit)
+	if err != nil {
+		return err
+	}
+	return printCommandResult(result, opts)
 }
 
 func (a *App) cmdAPI(args []string) error {
@@ -3664,14 +3699,10 @@ func (a *App) cmdRequest(args []string) error {
 	return nil
 }
 
-func (a *App) checkConfig() (string, error) {
+func (a *App) checkConfig() (commandResult, error) {
 	lines := []string{"Apifox 配置检查", strings.Repeat("=", 40)}
 	if a.Config.Token != "" {
-		token := "***"
-		if len(a.Config.Token) > 12 {
-			token = a.Config.Token[:8] + "..." + a.Config.Token[len(a.Config.Token)-4:]
-		}
-		lines = append(lines, "APIFOX_TOKEN: "+token)
+		lines = append(lines, "APIFOX_TOKEN: 已设置")
 	} else {
 		lines = append(lines, "APIFOX_TOKEN: 未设置")
 	}
@@ -3682,20 +3713,109 @@ func (a *App) checkConfig() (string, error) {
 	}
 	lines = append(lines, "API 版本: "+apiVersion, "使用公开 API: "+a.Config.BaseURL+"/v1")
 	if a.Config.Token == "" || a.Config.ProjectID == "" {
-		lines = append(lines, "", "请设置 APIFOX_TOKEN 和 APIFOX_PROJECT_ID")
-		return strings.Join(lines, "\n"), nil
+		message := "请设置 APIFOX_TOKEN 和 APIFOX_PROJECT_ID"
+		lines = append(lines, "", message)
+		return commandResult{
+			Text: strings.Join(lines, "\n"),
+			JSON: map[string]any{
+				"configured": false,
+				"connected":  false,
+				"project_id": a.Config.ProjectID,
+				"error": map[string]any{
+					"code":    "MISSING_CREDENTIALS",
+					"message": message,
+				},
+			},
+		}, fail(2, message)
 	}
 	openapi, err := a.exportOpenAPIMap(false, false)
 	if err != nil {
-		lines = append(lines, "", "API 连接失败: "+err.Error())
-		return strings.Join(lines, "\n"), nil
+		message := "API 连接失败: " + err.Error()
+		lines = append(lines, "", message)
+		return commandResult{
+			Text: strings.Join(lines, "\n"),
+			JSON: map[string]any{
+				"configured": true,
+				"connected":  false,
+				"project_id": a.Config.ProjectID,
+				"error": map[string]any{
+					"code":    "CONNECTION_FAILED",
+					"message": message,
+				},
+			},
+		}, fail(1, message)
 	}
 	info, _ := toMap(openapi["info"])
 	paths, _ := toMap(openapi["paths"])
 	components, _ := toMap(openapi["components"])
 	schemas, _ := toMap(components["schemas"])
-	lines = append(lines, "", "API 连接成功", "项目名称: "+defaultString(toString(info["title"]), "未知项目"), fmt.Sprintf("接口数量: %d 个", len(paths)), fmt.Sprintf("数据模型: %d 个", len(schemas)))
-	return strings.Join(lines, "\n"), nil
+	endpointCount := len(collectAPIEndpointInfos(openapi, ""))
+	lines = append(lines, "", "API 连接成功", "文档标题: "+defaultString(toString(info["title"]), "未知文档"), fmt.Sprintf("接口数量: %d 个", endpointCount), fmt.Sprintf("路径数量: %d 个", len(paths)), fmt.Sprintf("数据模型: %d 个", len(schemas)))
+	return commandResult{
+		Text: strings.Join(lines, "\n"),
+		JSON: map[string]any{
+			"configured":     true,
+			"connected":      true,
+			"project_id":     a.Config.ProjectID,
+			"document_title": defaultString(toString(info["title"]), "未知文档"),
+			"endpoint_count": endpointCount,
+			"path_count":     len(paths),
+			"schema_count":   len(schemas),
+		},
+	}, nil
+}
+
+func (a *App) projectOverview(limit int) (commandResult, error) {
+	openapi, err := a.exportOpenAPIMap(false, true)
+	if err != nil {
+		return commandResult{}, err
+	}
+	info, _ := toMap(openapi["info"])
+	paths, _ := toMap(openapi["paths"])
+	endpoints := collectAPIEndpointInfos(openapi, "")
+	endpointSamples := limitedEndpoints(endpoints, limit)
+	schemas := collectSchemaInfos(openapi, "")
+	schemaSamples := schemas
+	if len(schemaSamples) > limit {
+		schemaSamples = schemaSamples[:limit]
+	}
+	tags := collectTagInfos(openapi)
+	tagSamples := tags
+	if len(tagSamples) > limit {
+		tagSamples = tagSamples[:limit]
+	}
+	endpointPayload := endpointListJSON(endpoints, endpointSamples, "", limit)
+	schemaPayload := schemaListJSON(schemas, schemaSamples, "", limit)
+	tagPayload := tagsJSON("tags", tagSamples)
+	title := defaultString(toString(info["title"]), "未知文档")
+	text := strings.Join([]string{
+		"Apifox 项目概览",
+		strings.Repeat("=", 40),
+		"文档标题: " + title,
+		fmt.Sprintf("接口数量: %d 个", len(endpoints)),
+		fmt.Sprintf("路径数量: %d 个", len(paths)),
+		fmt.Sprintf("数据模型: %d 个", len(schemas)),
+		fmt.Sprintf("标签数量: %d 个", len(tags)),
+	}, "\n")
+	return commandResult{
+		Text: text,
+		JSON: map[string]any{
+			"project_id":     a.Config.ProjectID,
+			"document_title": title,
+			"counts": map[string]any{
+				"endpoints": len(endpoints),
+				"paths":     len(paths),
+				"schemas":   len(schemas),
+				"tags":      len(tags),
+			},
+			"samples": map[string]any{
+				"endpoints": endpointPayload["endpoints"],
+				"schemas":   schemaPayload["schemas"],
+				"tags":      tagPayload["tags"],
+			},
+			"limit": limit,
+		},
+	}, nil
 }
 
 type endpointInfo struct {
