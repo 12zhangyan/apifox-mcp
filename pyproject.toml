@@ -38,6 +38,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "pyinstaller>=6.14,<7",
     "pytest>=8.4,<9",
     "pytest-cov>=6,<8",
     "ruff>=0.12,<1",

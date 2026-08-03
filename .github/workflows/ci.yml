@@ -70,6 +70,54 @@ jobs:
       - name: Test enterprise MCP
         run: uv run pytest
 
+  windows-npm:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync build dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Build standalone Windows npm payload
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_npm.ps1
+
+      - name: Smoke test npm launchers
+        shell: powershell
+        run: |
+          node npm\bin\apifox-cli.cjs --version
+          node npm\bin\apifox-mcp.cjs --help
+          uv run python scripts\smoke_windows_npm_mcp.py npm\bin\apifox-mcp.cjs
+
+      - name: Pack npm artifact
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path dist\npm -Force | Out-Null
+          npm.cmd pack .\npm --pack-destination dist\npm
+
+      - name: Upload npm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apifox-mcp-windows-npm
+          path: dist/npm/*.tgz
+          if-no-files-found: error
+
   container:
     runs-on: ubuntu-latest
     steps:

@@ -114,10 +114,56 @@ jobs:
           path: dist/*.whl
           if-no-files-found: error
 
-  publish-wheels:
+  windows-npm:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Sync build dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Build standalone Windows npm payload
+        shell: powershell
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_npm.ps1 -Version $version
+
+      - name: Verify frozen MCP protocol
+        shell: powershell
+        run: uv run python scripts\smoke_windows_npm_mcp.py npm\bin\apifox-mcp.cjs
+
+      - name: Pack npm artifact
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path dist\npm -Force | Out-Null
+          npm.cmd pack .\npm --pack-destination dist\npm
+
+      - name: Upload npm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apifox-mcp-windows-npm
+          path: dist/npm/*.tgz
+          if-no-files-found: error
+
+  publish-assets:
     needs:
       - goreleaser
       - bundled-wheels
+      - windows-npm
     runs-on: ubuntu-latest
     steps:
       - name: Download wheels
@@ -127,8 +173,14 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Download Windows npm package
+        uses: actions/download-artifact@v5
+        with:
+          name: apifox-mcp-windows-npm
+          path: dist
+
       - name: Attach wheels to GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: gh release upload "${GITHUB_REF_NAME}" dist/*.whl --clobber
+        run: gh release upload "${GITHUB_REF_NAME}" dist/* --clobber

@@ -1,0 +1,40 @@
+{
+  "name": "@iwen-conf/apifox-mcp",
+  "version": "0.2.0",
+  "description": "Enterprise Apifox MCP server for Windows with bundled runtimes",
+  "license": "MIT",
+  "type": "commonjs",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "apifox-mcp": "bin/apifox-mcp.cjs",
+    "apifox-cli": "bin/apifox-cli.cjs"
+  },
+  "files": [
+    "bin",
+    "vendor",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prepack": "node scripts/verify-package.cjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/12zhangyan/apifox-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/12zhangyan/apifox-mcp/issues"
+  },
+  "homepage": "https://github.com/12zhangyan/apifox-mcp#readme",
+  "publishConfig": {
+    "access": "public"
+  }
+}

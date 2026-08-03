@@ -8,6 +8,8 @@
 .LSOverride
 .venv
 .vscode
+npm/vendor/*.exe
+npm/*.tgz
 # Icon must end with two \r
 Icon
 

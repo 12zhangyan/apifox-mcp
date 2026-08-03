@@ -1,0 +1,52 @@
+name: publish npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag whose npm package should be published
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Sync build dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Build and verify Windows npm payload
+        shell: powershell
+        run: |
+          $version = "${{ inputs.tag }}".TrimStart("v")
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_npm.ps1 -Version $version
+          uv run python scripts\smoke_windows_npm_mcp.py npm\bin\apifox-mcp.cjs
+
+      - name: Publish scoped npm package
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance
