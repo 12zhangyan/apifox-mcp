@@ -54,7 +54,7 @@ jobs:
           }
 
           $packageSpec = "$($manifest.name)@$($manifest.version)"
-          $lookupOutput = npm.cmd view $packageSpec version --json 2>&1
+          $lookupOutput = cmd.exe /d /s /c "npm.cmd view $packageSpec version --json 2>&1"
           $lookupExitCode = $LASTEXITCODE
           $lookupText = $lookupOutput | Out-String
 
