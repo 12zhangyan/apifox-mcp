@@ -70,6 +70,7 @@ jobs:
           } else {
             throw "Unable to query npm registry for ${packageSpec}: $lookupText"
           }
+          exit 0
 
       - name: Set up Go
         if: steps.package.outputs.published == 'false'
