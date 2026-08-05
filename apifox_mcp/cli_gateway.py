@@ -50,6 +50,34 @@ def redact_text(value: str, secrets: Sequence[str | None] = ()) -> str:
     return _SECRET_RE.sub(lambda match: match.group(1) + "[REDACTED]", redacted)
 
 
+def _business_failure(payload: dict[str, Any]) -> tuple[str, int | None] | None:
+    candidates = [payload]
+    import_result = payload.get("import_result")
+    if isinstance(import_result, dict):
+        candidates.append(import_result)
+    for candidate in candidates:
+        failed = candidate.get("success") is False or candidate.get("ok") is False
+        status: int | None = None
+        for key in ("status", "statusCode", "code"):
+            value = candidate.get(key)
+            if isinstance(value, int) and 400 <= value <= 599:
+                status = value
+                failed = True
+                break
+        raw_error = candidate.get("error")
+        if isinstance(raw_error, dict) and raw_error:
+            failed = True
+        if not failed:
+            continue
+        message = candidate.get("message") or candidate.get("errorMessage")
+        if not isinstance(message, str) or not message.strip():
+            if isinstance(raw_error, dict):
+                raw_message = raw_error.get("message")
+                message = raw_message if isinstance(raw_message, str) else None
+        return (message or "Apifox returned an unsuccessful result", status)
+    return None
+
+
 class CliGateway:
     def __init__(
         self,
@@ -212,4 +240,14 @@ class CliGateway:
             ) from exc
         if not isinstance(decoded, dict):
             decoded = {"result": decoded}
+        if failure := _business_failure(decoded):
+            message, apifox_status = failure
+            raise GatewayError(
+                "APIFOX_OPERATION_FAILED",
+                redact_text(message, (self.settings.token,))[:2000],
+                retryable=apifox_status == 429
+                or bool(apifox_status and apifox_status >= 500),
+                apifox_status=apifox_status,
+                details={key: value for key, value in decoded.items() if key != "error"},
+            )
         return GatewayResponse(decoded, duration_ms)

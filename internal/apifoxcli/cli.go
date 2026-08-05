@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-const apiVersion = "2024-03-28"
+const (
+	apiVersion       = "2024-03-28"
+	designAPIVersion = "2026-05-28"
+)
 
 var (
 	version = "dev"
@@ -189,10 +192,13 @@ Commands:
   schema delete         Explain schema deletion support
   tag list              List tags
   tag apis              List endpoints by tag
-  tag add               Replace an endpoint's tags
-  folder list           List folder/tag structure
-  folder create         Explain folder creation support
-  folder delete         Explain folder deletion support
+  tag add               Replace tags through the lightweight endpoint API
+  tag replace-batch     Replace tags/folders for multiple endpoints
+  folder list           List the real endpoint folder tree
+  folder create         Create an endpoint folder
+  folder move           Move an endpoint folder
+  folder move-batch     Move multiple endpoints to folders
+  folder delete-empty   Delete only empty endpoint folders
   audit responses       Check one endpoint's response coverage
   audit all-responses   Audit response coverage across endpoints
   audit path-naming     Check path naming style
@@ -399,48 +405,73 @@ Options:
 Example:
   apifox-cli tag apis --tag 订单管理`,
 
-	"tag add": `usage: apifox-cli tag add --method METHOD --path PATH --tag TAG [--tag TAG...] [--json] [-o FILE]
+	"tag add": `usage: apifox-cli tag add --method METHOD --path PATH --tag TAG [--tag TAG...] [--folder PATH|--folder-id ID|--sync-folder] [--dry-run] [--json]
 
-Replace an endpoint's tags.
+Replace an endpoint's tags through the lightweight endpoint API. No OpenAPI import is performed.
 Options:
   --method      HTTP method
   --path        Endpoint path
   --tag         Repeatable or comma-separated tag names
-  --json        Print {"result": "..."} for scripts
+  --folder      Existing endpoint folder path
+  --folder-id   Existing endpoint folder ID
+  --sync-folder Use the first tag as the folder path
+  --dry-run     Resolve and preview the exact update
+  --json        Print structured operation/counter output
   -o, --output  Write output to FILE
 Example:
   apifox-cli tag add --method GET --path /orders --tag 订单管理 --tag 核心接口`,
 
-	"folder list": `usage: apifox-cli folder list [--json] [-o FILE]
+	"tag replace-batch": `usage: apifox-cli tag replace-batch --file FILE [--dry-run] [--json]
 
-List folder/tag structure visible through OpenAPI export.
+Replace tags and optionally folders for multiple endpoints without importing OpenAPI.
+Input: {"operations":[{"method":"GET","path":"/orders","tags":["Orders"],"folder":"EAM/Orders"}]}.`,
+
+	"folder list": `usage: apifox-cli folder list [--folder-id ID] [--json] [-o FILE]
+
+List the real endpoint folder tree through the lightweight folder API.
 Options:
+  --folder-id   Limit output to one folder subtree
   --json        Print structured {"folders": [...], "total": N} output
   -o, --output  Write output to FILE
 Example:
   apifox-cli folder list`,
 
-	"folder create": `usage: apifox-cli folder create NAME [--description TEXT] [--json] [-o FILE]
+	"folder create": `usage: apifox-cli folder create NAME [--parent-id ID] [--description TEXT] [--dry-run] [--json]
 
-Explain folder creation support. The CLI does not currently create folders directly; use tags or Apifox UI.
+Create an endpoint folder through the lightweight folder API.
 Options:
   --name         Folder name
-  --description  Folder description for future compatibility
-  --json         Print {"result": "..."} for scripts
+  --parent-id    Parent folder ID, default root
+  --description  Folder description
+  --dry-run      Print the exact request without writing
+  --json         Print structured output
   -o, --output   Write output to FILE
 Example:
   apifox-cli folder create 订单管理`,
 
-	"folder delete": `usage: apifox-cli folder delete NAME [--confirm] [--json] [-o FILE]
+	"folder delete": `usage: apifox-cli folder delete FOLDER_ID [--confirm] [--dry-run] [--json]
 
-Explain folder deletion support. The CLI does not currently delete folders directly.
+Delete one endpoint folder only when its complete subtree is empty.
 Options:
-  --name        Folder name
-  --confirm     Accepted for command symmetry; no delete is performed
-  --json        Print {"result": "..."} for scripts
+  --folder-id   Folder ID
+  --confirm     Required for real deletion
+  --dry-run     Preview the folders that would be deleted
+  --json        Print structured output
   -o, --output  Write output to FILE
 Example:
   apifox-cli folder delete 订单管理`,
+
+	"folder move": `usage: apifox-cli folder move FOLDER_ID --parent-id ID [--dry-run] [--json]
+
+Move an endpoint folder under a new parent folder. Use parent ID 0 for root.`,
+
+	"folder move-batch": `usage: apifox-cli folder move-batch --file FILE [--dry-run] [--json]
+
+Move multiple endpoints to existing folders without importing OpenAPI.`,
+
+	"folder delete-empty": `usage: apifox-cli folder delete-empty (--folder-id ID|--all|--file FILE) [--confirm] [--dry-run] [--json]
+
+Delete endpoint folders only after verifying that their subtrees contain no endpoints.`,
 
 	"audit responses": `usage: apifox-cli audit responses --method METHOD --path PATH [--json] [-o FILE]
 
@@ -628,6 +659,7 @@ Options:
   --tag                    Required/repeatable when --scope tags
   --folder-id              Required/repeatable when --scope folders
   --exclude-tag            Repeatable excluded tag
+  --exclude-apifox-extensions Omit Apifox extension fields such as x-apifox-folder
   --dry-run                Print request preview without calling Apifox
   --print-payload          Alias for --dry-run
   -o, --output             Write exported spec to FILE
@@ -642,6 +674,7 @@ Options:
   --url                          OpenAPI/Swagger URL
   --endpoint-overwrite-behavior  OVERWRITE_EXISTING, AUTO_MERGE, KEEP_EXISTING, or CREATE_NEW
   --schema-overwrite-behavior    OVERWRITE_EXISTING, AUTO_MERGE, KEEP_EXISTING, or CREATE_NEW
+  --update-folder-of-changed-endpoint Update folders for changed endpoints during import
   --dry-run                      Print request preview without calling Apifox
   --print-payload                Alias for --dry-run
   --json                         Print raw JSON result
@@ -806,13 +839,21 @@ func (a *App) requireConfig() error {
 }
 
 func (a *App) callAPI(method string, endpoint string, payload any, params url.Values) (any, error) {
+	return a.callAPIPath(method, endpoint, "/v1"+endpoint, payload, params, apiVersion, false)
+}
+
+func (a *App) callDesignAPI(method string, endpoint string, payload any, params url.Values) (any, error) {
+	return a.callAPIPath(method, endpoint, "/api/v1"+endpoint, payload, params, designAPIVersion, true)
+}
+
+func (a *App) callAPIPath(method string, endpoint string, requestPath string, payload any, params url.Values, requestAPIVersion string, includeProjectHeader bool) (any, error) {
 	if err := a.requireToken(); err != nil {
 		return nil, err
 	}
 	if !strings.HasPrefix(endpoint, "/") {
 		return nil, fail(2, "endpoint must start with '/'")
 	}
-	u, err := url.Parse(a.Config.BaseURL + "/v1" + endpoint)
+	u, err := url.Parse(a.Config.BaseURL + requestPath)
 	if err != nil {
 		return nil, err
 	}
@@ -839,7 +880,11 @@ func (a *App) callAPI(method string, endpoint string, payload any, params url.Va
 	}
 	req.Header.Set("Authorization", "Bearer "+a.Config.Token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Apifox-Api-Version", apiVersion)
+	req.Header.Set("X-Apifox-Api-Version", requestAPIVersion)
+	if includeProjectHeader {
+		req.Header.Set("X-Project-Id", a.Config.ProjectID)
+		req.Header.Set("X-Apifox-Cli-Version", version)
+	}
 
 	resp, err := a.Client.Do(req)
 	if err != nil {
@@ -851,7 +896,7 @@ func (a *App) callAPI(method string, endpoint string, payload any, params url.Va
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusNoContent {
 		return nil, fail(1, "HTTP %d %s %s: %s", resp.StatusCode, strings.ToUpper(method), endpoint, extractError(raw))
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
@@ -864,7 +909,50 @@ func (a *App) callAPI(method string, endpoint string, payload any, params url.Va
 	if err := dec.Decode(&data); err != nil {
 		return string(raw), nil
 	}
+	if message, failed := businessError(data); failed {
+		return nil, fail(1, "API %s %s failed: %s", strings.ToUpper(method), endpoint, message)
+	}
 	return data, nil
+}
+
+func businessError(data any) (string, bool) {
+	obj, ok := data.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	failed := false
+	if value, exists := obj["success"]; exists {
+		if success, ok := value.(bool); ok && !success {
+			failed = true
+		}
+	}
+	if value, exists := obj["ok"]; exists {
+		if success, ok := value.(bool); ok && !success {
+			failed = true
+		}
+	}
+	for _, key := range []string{"status", "statusCode", "code"} {
+		if code := toInt(obj[key], 0); code >= 400 && code <= 599 {
+			failed = true
+			break
+		}
+	}
+	if !failed {
+		return "", false
+	}
+	if errorObject, ok := toMap(obj["error"]); ok {
+		for _, key := range []string{"message", "errorMessage"} {
+			if message := strings.TrimSpace(toString(errorObject[key])); message != "" {
+				return message, true
+			}
+		}
+	}
+	for _, key := range []string{"message", "errorMessage", "error"} {
+		if message := strings.TrimSpace(toString(obj[key])); message != "" {
+			return message, true
+		}
+	}
+	return "Apifox returned an unsuccessful result", true
 }
 
 func extractError(raw []byte) string {
@@ -2128,7 +2216,8 @@ func (a *App) cmdTag(args []string) error {
 Commands:
   list                  List tags
   apis                  List endpoints under one tag
-  add                   Replace an endpoint's tags`)
+  add                   Replace one endpoint's tags
+  replace-batch         Replace tags/folders for multiple endpoints`)
 		return nil
 	}
 	if handled, err := maybeNestedHelp(args, "tag"); handled {
@@ -2156,7 +2245,9 @@ Commands:
 		}
 		return printCommandResult(result, opts)
 	case "add":
-		opts, pos, err := parseOptions(args[1:], map[string]bool{"path": true, "method": true, "tag": true, "output": true}, map[string]string{"o": "output"})
+		opts, pos, err := parseOptions(args[1:], map[string]bool{
+			"path": true, "method": true, "tag": true, "folder": true, "folder-id": true, "output": true,
+		}, map[string]string{"o": "output"})
 		if err != nil {
 			return err
 		}
@@ -2165,11 +2256,29 @@ Commands:
 		if strings.HasPrefix(method, "/") && path != "" {
 			method, path = strings.ToUpper(path), method
 		}
-		result, err := a.setEndpointTags(path, method, optList(opts, "tag"))
+		spec, err := endpointMetaSpecFromFlags(method, path, optList(opts, "tag"), opts)
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		result, err := a.applyEndpointMetaChanges([]endpointMetaSpec{spec}, optBool(opts, "dry-run") || optBool(opts, "print-payload"))
+		if err != nil {
+			return err
+		}
+		return printCommandResult(result, opts)
+	case "replace-batch":
+		opts, _, err := parseOptions(args[1:], map[string]bool{"file": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		specs, err := readEndpointMetaSpecs(optString(opts, "file", ""), true)
+		if err != nil {
+			return err
+		}
+		result, err := a.applyEndpointMetaChanges(specs, optBool(opts, "dry-run") || optBool(opts, "print-payload"))
+		if err != nil {
+			return err
+		}
+		return printCommandResult(result, opts)
 	default:
 		return fail(2, "unknown tag command %q", args[0])
 	}
@@ -2180,9 +2289,12 @@ func (a *App) cmdFolder(args []string) error {
 		fmt.Println(`usage: apifox-cli folder <command> [options]
 
 Commands:
-  list                  List folder/tag structure
-  create                Explain folder creation support
-  delete                Explain folder deletion support`)
+  list                  List the real endpoint folder tree
+  create                Create an endpoint folder
+  move                  Move an endpoint folder
+  move-batch            Move multiple endpoints to folders
+  delete                Delete one empty folder subtree
+  delete-empty          Delete one or all empty folder subtrees`)
 		return nil
 	}
 	if handled, err := maybeNestedHelp(args, "folder"); handled {
@@ -2190,35 +2302,91 @@ Commands:
 	}
 	switch args[0] {
 	case "list":
-		opts, _, err := parseOptions(args[1:], map[string]bool{"output": true}, map[string]string{"o": "output"})
+		opts, _, err := parseOptions(args[1:], map[string]bool{"folder-id": true, "output": true}, map[string]string{"o": "output"})
 		if err != nil {
 			return err
 		}
-		result, err := a.listFolders()
+		folderID, err := optInt(opts, "folder-id", -1)
+		if err != nil {
+			return err
+		}
+		result, err := a.listRealFolders(folderID)
 		if err != nil {
 			return err
 		}
 		return printCommandResult(result, opts)
 	case "create":
-		opts, pos, err := parseOptions(args[1:], map[string]bool{"name": true, "description": true, "output": true}, map[string]string{"o": "output"})
+		opts, pos, err := parseOptions(args[1:], map[string]bool{"name": true, "parent-id": true, "description": true, "output": true}, map[string]string{"o": "output"})
 		if err != nil {
 			return err
 		}
-		result, err := a.createFolder(optOrPos(opts, "name", pos, 0), optString(opts, "description", ""))
+		parentID, err := optInt(opts, "parent-id", 0)
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
-	case "delete":
-		opts, pos, err := parseOptions(args[1:], map[string]bool{"name": true, "output": true}, map[string]string{"o": "output"})
+		result, err := a.createEndpointFolder(optOrPos(opts, "name", pos, 0), parentID, optString(opts, "description", ""), optBool(opts, "dry-run") || optBool(opts, "print-payload"))
 		if err != nil {
 			return err
 		}
-		result, err := a.deleteFolder(optOrPos(opts, "name", pos, 0), optBool(opts, "confirm"))
+		return printCommandResult(result, opts)
+	case "move":
+		opts, pos, err := parseOptions(args[1:], map[string]bool{"folder-id": true, "parent-id": true, "output": true}, map[string]string{"o": "output"})
 		if err != nil {
 			return err
 		}
-		return printTextResult(result, opts)
+		folderID, err := requiredIntOptionOrPos(opts, "folder-id", pos, 0)
+		if err != nil {
+			return err
+		}
+		parentID, err := optInt(opts, "parent-id", -1)
+		if err != nil || parentID < 0 {
+			return fail(2, "--parent-id must be a non-negative integer")
+		}
+		result, err := a.moveEndpointFolder(folderID, parentID, optBool(opts, "dry-run") || optBool(opts, "print-payload"))
+		if err != nil {
+			return err
+		}
+		return printCommandResult(result, opts)
+	case "move-batch":
+		opts, _, err := parseOptions(args[1:], map[string]bool{"file": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		specs, err := readEndpointMetaSpecs(optString(opts, "file", ""), false)
+		if err != nil {
+			return err
+		}
+		for index, spec := range specs {
+			if spec.HasTags {
+				return fail(2, "operations[%d].tags is not allowed in folder move-batch", index)
+			}
+			if spec.Folder == "" && spec.FolderID == nil {
+				return fail(2, "operations[%d] requires folder or folder_id", index)
+			}
+		}
+		result, err := a.applyEndpointMetaChanges(specs, optBool(opts, "dry-run") || optBool(opts, "print-payload"))
+		if err != nil {
+			return err
+		}
+		return printCommandResult(result, opts)
+	case "delete", "delete-empty":
+		opts, pos, err := parseOptions(args[1:], map[string]bool{"folder-id": true, "file": true, "output": true}, map[string]string{"o": "output"})
+		if err != nil {
+			return err
+		}
+		folderID, all, err := readDeleteEmptyTarget(opts, pos)
+		if err != nil {
+			return err
+		}
+		dryRun := optBool(opts, "dry-run") || optBool(opts, "print-payload")
+		if !dryRun && !optBool(opts, "confirm") {
+			return fail(2, "--confirm is required for folder deletion")
+		}
+		result, err := a.deleteEmptyEndpointFolders(folderID, all, dryRun)
+		if err != nil {
+			return err
+		}
+		return printCommandResult(result, opts)
 	default:
 		return fail(2, "unknown folder command %q", args[0])
 	}
@@ -3374,7 +3542,7 @@ func (a *App) cmdExportOpenAPI(args []string) error {
 	}
 	payload := map[string]any{
 		"scope":        scope,
-		"options":      map[string]any{"includeApifoxExtensionProperties": optBool(opts, "include-apifox-extensions"), "addFoldersToTags": optBool(opts, "add-folders-to-tags")},
+		"options":      map[string]any{"includeApifoxExtensionProperties": !optBool(opts, "exclude-apifox-extensions"), "addFoldersToTags": optBool(opts, "add-folders-to-tags")},
 		"oasVersion":   optString(opts, "oas-version", "3.1"),
 		"exportFormat": format,
 	}
@@ -4281,15 +4449,6 @@ func (a *App) getAPIsByTag(tag string) (commandResult, error) {
 	return commandResult{Text: text, JSON: map[string]any{"tag": tag, "endpoints": items, "total": len(items)}}, nil
 }
 
-func (a *App) listFolders() (commandResult, error) {
-	openapi, err := a.exportOpenAPIMap(false, true)
-	if err != nil {
-		return commandResult{}, err
-	}
-	tags := collectTagInfos(openapi)
-	return commandResult{Text: formatTags("标签列表", tags), JSON: tagsJSON("folders", tags)}, nil
-}
-
 func (a *App) deleteEndpoint(path string, method string, confirm bool) (string, error) {
 	if path == "" || method == "" {
 		return "", fail(2, "path and method are required")
@@ -4312,73 +4471,6 @@ func (a *App) deleteSchema(name string, confirm bool) (string, error) {
 		return fmt.Sprintf("删除操作不可撤销。\n\n确认要删除数据模型时再执行:\napifox-cli schema delete --name %s --confirm", name), nil
 	}
 	return fmt.Sprintf("Apifox 公开 API 暂不支持直接删除数据模型。\n\n请在 Apifox 客户端中手动删除: %s", name), nil
-}
-
-func (a *App) createFolder(name string, description string) (string, error) {
-	if name == "" {
-		return "", fail(2, "name is required")
-	}
-	_ = description
-	return fmt.Sprintf("Apifox 的目录可通过接口标签自动形成。\n\n创建或更新接口时设置 tags 包含 %q，或执行:\napifox-cli tag add --method GET --path /existing-api --tag %s", name, name), nil
-}
-
-func (a *App) deleteFolder(name string, confirm bool) (string, error) {
-	if name == "" {
-		return "", fail(2, "name is required")
-	}
-	if !confirm {
-		return fmt.Sprintf("删除操作不可撤销。\n\n确认要删除目录时再执行:\napifox-cli folder delete --name %s --confirm", name), nil
-	}
-	return fmt.Sprintf("Apifox 公开 API 暂不支持直接删除目录。\n\n请在 Apifox 客户端中手动删除目录: %s", name), nil
-}
-
-func (a *App) setEndpointTags(path string, method string, tags []string) (string, error) {
-	if path == "" || method == "" {
-		return "", fail(2, "path and method are required")
-	}
-	method = strings.ToUpper(method)
-	if !httpMethods[method] {
-		return "", fail(2, "method must be one of: %s", strings.Join(sortedKeys(httpMethods), ", "))
-	}
-	if len(tags) == 0 {
-		return "", fail(2, "at least one --tag is required")
-	}
-	openapi, err := a.exportOpenAPIMap(false, true)
-	if err != nil {
-		return "", err
-	}
-	paths, _ := toMap(openapi["paths"])
-	pathItem, ok := toMap(paths[path])
-	if !ok {
-		return "", fail(1, "未找到路径为 %s 的接口", path)
-	}
-	operation, ok := toMap(pathItem[strings.ToLower(method)])
-	if !ok {
-		return "", fail(1, "未找到 %s %s 接口", method, path)
-	}
-	tagValues := make([]any, 0, len(tags))
-	for _, tag := range tags {
-		tagValues = append(tagValues, tag)
-	}
-	operation["tags"] = tagValues
-	components := map[string]any{}
-	if rawComponents, ok := toMap(openapi["components"]); ok {
-		components = rawComponents
-	}
-	importSpec := map[string]any{
-		"openapi": "3.0.0",
-		"info":    map[string]any{"title": defaultString(toString(operation["summary"]), "API"), "version": "1.0.0"},
-		"paths":   map[string]any{path: map[string]any{strings.ToLower(method): operation}},
-	}
-	if len(components) > 0 {
-		importSpec["components"] = components
-	}
-	result, err := a.importOpenAPI(importSpec, "OVERWRITE_EXISTING", "OVERWRITE_EXISTING", 0)
-	if err != nil {
-		return "", err
-	}
-	counters := importCounters(result)
-	return fmt.Sprintf("标签更新成功\n\n接口: %s %s\n标签: %s\n更新: %d", method, path, strings.Join(tags, ", "), counters["endpointUpdated"]), nil
 }
 
 func responseCodes(op map[string]any) map[string]bool {

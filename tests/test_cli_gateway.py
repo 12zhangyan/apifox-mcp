@@ -35,6 +35,11 @@ elif "--structured-fail" in sys.argv:
 elif "--validation-fail" in sys.argv:
     print("spec validation failed: missing description", file=sys.stderr)
     raise SystemExit(2)
+elif "--business-fail" in sys.argv:
+    print(json.dumps({
+        "kind": "endpoint",
+        "import_result": {"success": False, "code": 403, "message": "import busy"},
+    }))
 elif "--sleep" in sys.argv:
     time.sleep(5)
 else:
@@ -109,6 +114,19 @@ def test_gateway_enforces_timeout(tmp_path: Path) -> None:
 
     assert caught.value.code == "CLI_TIMEOUT"
     assert caught.value.retryable is True
+
+
+def test_gateway_rejects_business_failure_with_zero_exit_code(tmp_path: Path) -> None:
+    script = tmp_path / "fake_cli.py"
+    write_fake_cli(script)
+    gateway = CliGateway(make_settings(), command=[sys.executable, str(script)])
+
+    with pytest.raises(GatewayError) as caught:
+        asyncio.run(gateway.run(["--business-fail"]))
+
+    assert caught.value.code == "APIFOX_OPERATION_FAILED"
+    assert caught.value.apifox_status == 403
+    assert "import busy" in caught.value.message
 
 
 def test_redact_text_handles_header_and_known_secret() -> None:

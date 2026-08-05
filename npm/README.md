@@ -12,3 +12,6 @@ apifox-mcp
 ```
 
 Writes default to plan-only. Set `APIFOX_MCP_WRITE_MODE=apply` only in an approved environment.
+The CLI timeout defaults to 120 seconds and can be changed with `APIFOX_MCP_CLI_TIMEOUT`.
+
+On Windows, prefer the installed `apifox-mcp.cmd` / `apifox-cli.cmd` shims or explicit executable paths when another shell cannot resolve `npx`. Stdout is reserved for MCP/JSON output; diagnostics are written to stderr.

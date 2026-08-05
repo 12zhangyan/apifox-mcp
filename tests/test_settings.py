@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from apifox_mcp.settings import SettingsError, Transport, _bundled_cli_path
+from apifox_mcp.settings import Settings, SettingsError, Transport, _bundled_cli_path
 
 from .conftest import make_settings
 
@@ -41,3 +41,8 @@ def test_bundled_cli_path_uses_platform_binary(tmp_path) -> None:
     unix_cli = bin_dir / "apifox-cli"
     unix_cli.write_bytes(b"test")
     assert _bundled_cli_path(tmp_path, windows=False) == str(unix_cli)
+
+
+def test_default_cli_timeout_allows_metadata_and_import_writes(monkeypatch) -> None:
+    monkeypatch.delenv("APIFOX_MCP_CLI_TIMEOUT", raising=False)
+    assert Settings.from_env().cli_timeout_seconds == 120

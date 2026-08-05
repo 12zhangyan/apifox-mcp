@@ -15,6 +15,7 @@ Use the canonical command surface in new work:
 
 - Endpoint writes: `api create`, `api update`, `api upsert`
 - Schema writes: `schema create`, `schema update`
+- Metadata writes: `tag add`, `tag replace-batch`, `folder create`, `folder move`, `folder move-batch`, `folder delete-empty`
 - Batch writes: `apply-docs`, `generate-crud`
 - Discovery/audit: `api`, `schema`, `tag`, `folder`, `audit`, `versions`, `request`
 
@@ -22,8 +23,8 @@ Treat `create-endpoint`, `update-endpoint`, and `upsert-endpoint` as legacy alia
 
 Current write boundaries:
 
-- Supported writes: create/update/upsert endpoints, create/update schemas, generate CRUD endpoint docs, import OpenAPI/Postman, replace endpoint tags.
-- Not supported as direct writes: delete endpoint, delete schema, create/delete folder. Those commands explain the limitation instead of mutating Apifox. Prefer tags for folder-like organization.
+- Supported writes: create/update/upsert endpoints, create/update schemas, generate CRUD endpoint docs, import OpenAPI/Postman, lightweight endpoint tag/folder updates, and endpoint folder create/move/delete-empty.
+- Not supported as direct writes: delete endpoint and delete schema. Folder deletion is limited to verified-empty subtrees and requires `--confirm`.
 
 `api upsert` imports a generated OpenAPI operation with overwrite behavior. Treat it as replacing the documented operation, not as a field-level patch.
 
@@ -181,6 +182,9 @@ apifox-cli schema get Order
 apifox-cli tag list
 apifox-cli tag apis --tag 订单管理
 apifox-cli folder list
+apifox-cli tag add --method GET --path /orders --tag Orders --folder EAM/Orders --dry-run
+apifox-cli tag replace-batch --file .apifox-meta-batch.json --dry-run
+apifox-cli folder delete-empty --all --dry-run
 apifox-cli versions
 ```
 
@@ -193,7 +197,7 @@ apifox-cli request POST /projects/123/export-openapi --data-file .apifox-request
 
 ## Import And Export
 
-Use import/export for migration, backup, or compatibility work. Do not make it the primary AI documentation workflow.
+Use import/export for migration, backup, or compatibility work. Do not use import for tag/folder-only changes. OpenAPI export includes Apifox extension fields such as `x-apifox-folder` by default.
 
 ```bash
 apifox-cli export-openapi --format JSON --oas-version 3.1 -o .apifox-openapi.json

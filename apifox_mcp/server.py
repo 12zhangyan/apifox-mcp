@@ -369,20 +369,52 @@ def create_server(
         spec: dict[str, Any] | None,
         method: str,
         path: str,
-        tags: list[str],
+        tags: list[str] | None,
+        folder: str,
+        folder_id: int | None,
+        sync_folder: bool,
     ) -> tuple[list[str], list[str], dict[str, Any] | None]:
         if kind is ChangeKind.TAGS_REPLACE:
-            if not method or not path or not tags:
+            if not method or not path or tags is None:
                 raise McpServiceError(
                     "INVALID_INPUT", "tags_replace requires method, path, and tags"
                 )
-            base = ["tag", "add", "--method", method.upper(), "--path", path]
-            for tag in tags:
-                base.extend(["--tag", tag])
+            operation: dict[str, Any] = {
+                "method": method.upper(),
+                "path": path,
+                "tags": tags,
+            }
+            if folder:
+                operation["folder"] = folder
+            if folder_id is not None:
+                operation["folder_id"] = folder_id
+            if sync_folder:
+                operation["sync_folder"] = True
+            payload = {"operations": [operation]}
+            base = ["tag", "replace-batch", "--file", "-"]
             return (
-                ["api", "get", "--method", method.upper(), "--path", path, "--json"],
+                [*base, "--dry-run", "--json"],
                 [*base, "--json"],
-                None,
+                payload,
+            )
+        if kind in {ChangeKind.TAGS_REPLACE_BATCH, ChangeKind.FOLDER_MOVE_BATCH}:
+            if spec is None:
+                raise McpServiceError("INVALID_INPUT", f"{kind.value} requires spec")
+            command = (
+                ["tag", "replace-batch"]
+                if kind is ChangeKind.TAGS_REPLACE_BATCH
+                else ["folder", "move-batch"]
+            )
+            base = [*command, "--file", "-"]
+            return ([*base, "--dry-run", "--json"], [*base, "--json"], spec)
+        if kind is ChangeKind.FOLDER_DELETE_EMPTY:
+            if spec is None:
+                raise McpServiceError("INVALID_INPUT", "folder_delete_empty requires spec")
+            base = ["folder", "delete-empty", "--file", "-"]
+            return (
+                [*base, "--dry-run", "--json"],
+                [*base, "--confirm", "--json"],
+                spec,
             )
         if spec is None:
             raise McpServiceError("INVALID_INPUT", f"{kind.value} requires spec")
@@ -410,6 +442,9 @@ def create_server(
         method: str = "",
         path: str = "",
         tags: list[str] | None = None,
+        folder: str = "",
+        folder_id: int | None = None,
+        sync_folder: bool = False,
     ) -> ToolResult:
         """Validate and dry-run a change, returning a short-lived immutable plan ID."""
         request_id = _request_id()
@@ -417,19 +452,11 @@ def create_server(
         try:
             policy.require_plan()
             dry_args, apply_args, stdin_payload = change_commands(
-                kind, spec, method, path, tags or []
+                kind, spec, method, path, tags, folder, folder_id, sync_folder
             )
             response = await gateway.run(dry_args, stdin_payload=stdin_payload)
             version = await gateway.version()
             preview = response.data
-            if kind is ChangeKind.TAGS_REPLACE:
-                preview = {
-                    "current_endpoint": response.data,
-                    "target_tags": tags or [],
-                    "note": (
-                        "tag replacement is validated by a read because the CLI has no tag dry-run"
-                    ),
-                }
             record = await plans.create(
                 kind=kind,
                 args=apply_args,

@@ -115,6 +115,7 @@ MCP writes default to plan-only. A real apply requires an explicit server settin
 ```bash
 export APIFOX_MCP_WRITE_MODE=plan   # default: inspect and dry-run only
 # export APIFOX_MCP_WRITE_MODE=apply # enable only in an approved environment
+export APIFOX_MCP_CLI_TIMEOUT=120   # configurable write timeout in seconds
 ```
 
 ## Enterprise MCP Tools
@@ -134,7 +135,9 @@ Controlled changes:
 2. Inspect its dry-run preview, payload hash, expiry, and plan ID.
 3. Call `apifox_change_apply` with only that plan ID. The server rejects disabled, expired, changed, cross-project, busy, or already-consumed plans.
 
-Supported change kinds are `endpoint_create`, `endpoint_update`, `endpoint_upsert`, `schema_create`, `schema_update`, `apply_docs`, `generate_crud`, and `tags_replace`.
+Supported change kinds are `endpoint_create`, `endpoint_update`, `endpoint_upsert`, `schema_create`, `schema_update`, `apply_docs`, `generate_crud`, `tags_replace`, `tags_replace_batch`, `folder_move_batch`, and `folder_delete_empty`.
+
+`tags_replace` accepts optional `folder`, `folder_id`, or `sync_folder=true`. Tag/folder changes use the lightweight endpoint API and never call OpenAPI import. Batch specs use `{"operations":[{"method":"GET","path":"/orders","tags":["Orders"],"folder":"EAM/Orders"}]}`.
 
 Start stdio (default):
 
@@ -156,7 +159,7 @@ Use the canonical command surface in new scripts: `api create|update|upsert`, `s
 
 Every command and subcommand supports `--help` without requiring credentials, files, or network access. JSON-file inputs accept `--file -` for stdin. Validation commands support `--json` with output shaped as `{"valid": bool, "errors": [...]}` and exit with code `1` when invalid. Discovery, audit, and write commands return structured `--json` output for scripts.
 
-Direct endpoint/schema/folder deletion and folder creation are not currently supported as mutating operations; those commands explain the limitation. Prefer tags for folder-like organization.
+Direct endpoint/schema deletion is not supported. Endpoint folders support real list/create/move operations and guarded empty-folder deletion; real deletion requires `--confirm` and refuses non-empty subtrees.
 
 Project and discovery:
 
@@ -170,6 +173,7 @@ apifox-cli schema list --limit 20
 apifox-cli schema get Order
 apifox-cli tag list
 apifox-cli folder list
+apifox-cli folder create Orders --parent-id 12 --dry-run
 ```
 
 Endpoint documentation:
@@ -216,6 +220,11 @@ Maintenance and audits:
 ```bash
 apifox-cli tag apis --tag 订单管理
 apifox-cli tag add --method GET --path /orders --tag 订单管理 --tag 核心接口
+apifox-cli tag add --method GET --path /orders --tag 订单管理 --folder EAM/订单管理 --dry-run
+apifox-cli tag replace-batch --file .apifox-meta-batch.json --dry-run
+apifox-cli folder move-batch --file .apifox-folder-batch.json --dry-run
+apifox-cli folder delete-empty --all --dry-run
+apifox-cli folder delete-empty --all --confirm --json
 apifox-cli audit responses --method POST --path /orders
 apifox-cli audit all-responses --tag 订单管理
 apifox-cli audit path-naming --style kebab-case
@@ -277,12 +286,13 @@ Example `.apifox-endpoint.json`:
 
 ## Import And Export
 
-OpenAPI import/export remains available for migration, backup, and compatibility work. It is not the primary AI authoring path.
+OpenAPI import/export remains available for migration, backup, and compatibility work. It is not the primary AI authoring path. Export includes Apifox extension fields such as `x-apifox-folder` by default; use `--exclude-apifox-extensions` only when a portable spec is required.
 
 ```bash
 apifox-cli export-openapi --format JSON --oas-version 3.1 -o .apifox-openapi.json
 apifox-cli export-openapi --scope tags --tag 订单管理 --format YAML -o .apifox-orders.yaml
 apifox-cli import-openapi --file .apifox-openapi.json --endpoint-overwrite-behavior AUTO_MERGE
+apifox-cli import-openapi --file .apifox-openapi.json --update-folder-of-changed-endpoint
 apifox-cli import-openapi --url https://example.com/openapi.yaml --prepend-base-path
 apifox-cli import-postman --file .postman-collection.json
 ```

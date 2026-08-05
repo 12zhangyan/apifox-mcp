@@ -17,6 +17,9 @@ class ChangeKind(str, Enum):
     APPLY_DOCS = "apply_docs"
     GENERATE_CRUD = "generate_crud"
     TAGS_REPLACE = "tags_replace"
+    TAGS_REPLACE_BATCH = "tags_replace_batch"
+    FOLDER_MOVE_BATCH = "folder_move_batch"
+    FOLDER_DELETE_EMPTY = "folder_delete_empty"
 
 
 class ErrorInfo(BaseModel):

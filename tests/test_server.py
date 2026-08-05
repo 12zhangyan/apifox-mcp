@@ -121,3 +121,86 @@ def test_apply_mode_consumes_plan_once() -> None:
             assert second.structured_content["error"]["code"] == "PLAN_CONSUMED"
 
     asyncio.run(scenario())
+
+
+def test_tags_replace_uses_real_dry_run_and_frozen_stdin_payload() -> None:
+    async def scenario() -> None:
+        gateway = FakeGateway()
+        settings = replace(make_settings(), write_mode=WriteMode.APPLY)
+        server = create_server(settings, gateway=gateway, audit=AuditLogger(stream=io.StringIO()))
+        async with Client(server) as client:
+            planned = await client.call_tool(
+                "apifox_change_plan",
+                {
+                    "kind": "tags_replace",
+                    "method": "get",
+                    "path": "/orders",
+                    "tags": ["Orders"],
+                    "folder": "EAM/Orders",
+                },
+            )
+            assert planned.structured_content["ok"] is True
+            assert planned.structured_content["data"]["preview"] == {
+                "operations": [{"action": "upsert"}]
+            }
+            dry_args, dry_payload = gateway.calls[0]
+            assert dry_args == (
+                "tag",
+                "replace-batch",
+                "--file",
+                "-",
+                "--dry-run",
+                "--json",
+            )
+            assert dry_payload == {
+                "operations": [
+                    {
+                        "method": "GET",
+                        "path": "/orders",
+                        "tags": ["Orders"],
+                        "folder": "EAM/Orders",
+                    }
+                ]
+            }
+
+            plan_id = planned.structured_content["data"]["plan_id"]
+            applied = await client.call_tool("apifox_change_apply", {"plan_id": plan_id})
+            assert applied.structured_content["ok"] is True
+            apply_args, apply_payload = gateway.calls[1]
+            assert apply_args == ("tag", "replace-batch", "--file", "-", "--json")
+            assert apply_payload == dry_payload
+
+    asyncio.run(scenario())
+
+
+def test_batch_and_empty_folder_change_kinds_route_to_cli_stdin() -> None:
+    async def scenario() -> None:
+        gateway = FakeGateway()
+        server = create_server(
+            make_settings(), gateway=gateway, audit=AuditLogger(stream=io.StringIO())
+        )
+        async with Client(server) as client:
+            cases = [
+                (
+                    "tags_replace_batch",
+                    {"operations": [{"method": "GET", "path": "/a", "tags": []}]},
+                    ("tag", "replace-batch"),
+                ),
+                (
+                    "folder_move_batch",
+                    {"operations": [{"method": "GET", "path": "/a", "folder_id": 12}]},
+                    ("folder", "move-batch"),
+                ),
+                ("folder_delete_empty", {"all": True}, ("folder", "delete-empty")),
+            ]
+            for kind, spec, prefix in cases:
+                planned = await client.call_tool(
+                    "apifox_change_plan", {"kind": kind, "spec": spec}
+                )
+                assert planned.structured_content["ok"] is True
+                args, payload = gateway.calls[-1]
+                assert args[:2] == prefix
+                assert args[-2:] == ("--dry-run", "--json")
+                assert payload == spec
+
+    asyncio.run(scenario())

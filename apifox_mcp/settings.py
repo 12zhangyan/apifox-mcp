@@ -121,7 +121,7 @@ class Settings:
             base_url=base_url,
             cli_path=cli_path,
             write_mode=write_mode,
-            cli_timeout_seconds=_env_int("APIFOX_MCP_CLI_TIMEOUT", 30),
+            cli_timeout_seconds=_env_int("APIFOX_MCP_CLI_TIMEOUT", 120),
             max_input_bytes=_env_int("APIFOX_MCP_MAX_INPUT_BYTES", 2 * 1024 * 1024),
             max_output_bytes=_env_int("APIFOX_MCP_MAX_OUTPUT_BYTES", 8 * 1024 * 1024),
             max_concurrency=_env_int("APIFOX_MCP_MAX_CONCURRENCY", 4),

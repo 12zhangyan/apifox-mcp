@@ -79,6 +79,16 @@ func TestCommandHelpDoesNotRequireRuntimeInputs(t *testing.T) {
 			args: []string{"upsert-endpoint", "--help"},
 			want: "Legacy alias for apifox-cli api upsert",
 		},
+		{
+			name: "tag replace batch",
+			args: []string{"tag", "replace-batch", "--help"},
+			want: "without importing OpenAPI",
+		},
+		{
+			name: "folder delete empty",
+			args: []string{"folder", "delete-empty", "--help"},
+			want: "subtrees contain no endpoints",
+		},
 	}
 
 	for _, tc := range cases {
