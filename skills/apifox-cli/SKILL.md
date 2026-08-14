@@ -26,7 +26,10 @@ Current write boundaries:
 - Supported writes: create/update/upsert endpoints, create/update schemas, generate CRUD endpoint docs, import OpenAPI/Postman, lightweight endpoint tag/folder updates, and endpoint folder create/move/delete-empty.
 - Not supported as direct writes: delete endpoint and delete schema. Folder deletion is limited to verified-empty subtrees and requires `--confirm`.
 
-`api upsert` imports a generated OpenAPI operation with overwrite behavior. Treat it as replacing the documented operation, not as a field-level patch.
+`api update` and `api upsert` accept partial specs and import only supplied fields with
+`AUTO_MERGE`. They require `path` and `method`; create specs remain complete and strict. Always
+read the endpoint back after a write because an Apifox import counter is not proof that every
+field persisted, especially for root-path or folderless endpoints.
 
 ## Machine Contract
 
@@ -60,7 +63,7 @@ Invalid validation exits with code `1`. CLI usage errors exit with code `2`. Do 
 
 Mutating commands support `--dry-run` and `--print-payload`. For `apply-docs --dry-run`, inspect the printed `operations` array before writing. Real `apply-docs` stops at the first failed operation by default; with `--json`, it prints summary counts and per-operation results. Use `--continue-on-error` only when the user explicitly wants a full failure inventory.
 
-Write commands such as `api upsert --json`, `schema create --json`, and `generate-crud --json` return structured fields including `kind`, `action`, identity fields, `created`, `updated`, `counters`, and `import_result`. Use those fields for scripts instead of parsing human-readable success text.
+Write commands such as `api upsert --json`, `schema create --json`, and `generate-crud --json` return structured fields including `kind`, `action`, identity fields, `created`, `updated`, `counters`, and `import_result`. Endpoint writes also return `persistence_verified=false` and `read_back_verification_needed=true`; use `api get` after writing. Use these fields for scripts instead of parsing human-readable success text.
 
 Discovery and audit commands support structured `--json` output. `api`, `schema`, `tag`, `folder`, and `audit` return typed fields such as `endpoints`, `schemas`, `tags`, `valid`, `problems`, and `issues`. Simple status commands may still wrap text as `{"result": "..."}`; `request --json` returns the raw Apifox JSON result.
 
@@ -108,15 +111,15 @@ Before a real write, run a dry-run preview, then apply with credentials:
 
 ```bash
 apifox-cli apply-docs --file .apifox-docs.json --dry-run
-APIFOX_TOKEN=... APIFOX_PROJECT_ID=8555669 apifox-cli apply-docs --file .apifox-docs.json
+APIFOX_TOKEN=... APIFOX_PROJECT_ID=your-project-id apifox-cli apply-docs --file .apifox-docs.json
 ```
 
 For broad updates, write in batches of about 15 operations to reduce the chance of Apifox returning 403:
 
 ```bash
 apifox-cli apply-docs --file .apifox-docs.json --batch-size 15 --dry-run
-APIFOX_TOKEN=... APIFOX_PROJECT_ID=8555669 apifox-cli apply-docs --file .apifox-docs.json --offset 0 --limit 15
-APIFOX_TOKEN=... APIFOX_PROJECT_ID=8555669 apifox-cli apply-docs --file .apifox-docs.json --offset 15 --limit 15
+APIFOX_TOKEN=... APIFOX_PROJECT_ID=your-project-id apifox-cli apply-docs --file .apifox-docs.json --offset 0 --limit 15
+APIFOX_TOKEN=... APIFOX_PROJECT_ID=your-project-id apifox-cli apply-docs --file .apifox-docs.json --offset 15 --limit 15
 ```
 
 If 403 recurs, stop, keep the generated file for inspection, and report the exact CLI output instead of retrying blindly.
@@ -214,6 +217,10 @@ apifox-cli import-postman --file .postman-collection.json --dry-run
 ```
 
 Choose overwrite behavior deliberately: `OVERWRITE_EXISTING`, `AUTO_MERGE`, `KEEP_EXISTING`, or `CREATE_NEW`.
+Never use a reduced OpenAPI document with `OVERWRITE_EXISTING` for routine documentation work;
+omitted parameters, request bodies, examples, tags, and folder metadata can be removed. Use
+`-o` or `--output` for exports (`--file` is a deprecated compatibility alias). Folder and tag
+truth must come from `folder list` and endpoint reads, not only from exported extensions/tags.
 
 ## API Definition Rules
 
@@ -223,6 +230,7 @@ When creating or updating endpoints:
 - Keep `description` as business context and metadata, not request/response examples.
 - Put JSON Schema in `response_schema` or `request_body_schema`.
 - Include `description` on every schema field and parameter.
+- Use `cookie_params` (or the `cookies` compatibility alias) for cookie parameters such as `AuthenticationToken`; generic `parameters` entries with `in: cookie` are also accepted.
 - Use real example values; do not use placeholders like `"string"`.
 - Let the CLI add standard error responses unless custom `responses` are required.
 

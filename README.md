@@ -31,6 +31,12 @@ apifox-mcp --help
 apifox-cli --version
 ```
 
+For Cursor on Windows, point `mcp.json` at the installed command shim, never at an internal
+`node_modules/@yanzhang123/apifox-mcp` path. Resolve the active shim after each NVM switch with
+`where.exe apifox-mcp.cmd`; either use `apifox-mcp.cmd` when Cursor inherits that `PATH`, or use
+the returned absolute `.cmd` path as `command`. Restart Cursor after changing Node/NVM versions
+and verify `apifox-mcp --help` from the same environment before debugging MCP status.
+
 The npm package currently targets Windows x64 only. After CI succeeds for a push to `main`,
 `.github/workflows/npm-publish.yml` publishes a new `npm/package.json` version automatically.
 Already-published versions are skipped, so every release PR must bump the version before merge.
@@ -116,6 +122,7 @@ MCP writes default to plan-only. A real apply requires an explicit server settin
 export APIFOX_MCP_WRITE_MODE=plan   # default: inspect and dry-run only
 # export APIFOX_MCP_WRITE_MODE=apply # enable only in an approved environment
 export APIFOX_MCP_CLI_TIMEOUT=120   # configurable write timeout in seconds
+export APIFOX_MCP_READ_CACHE_TTL=300 # OpenAPI/index cache TTL in seconds
 ```
 
 ## Enterprise MCP Tools
@@ -123,11 +130,18 @@ export APIFOX_MCP_CLI_TIMEOUT=120   # configurable write timeout in seconds
 Read-only discovery:
 
 - `apifox_project_check`
-- `apifox_project_overview` (single-export counts and bounded samples)
+- `apifox_project_overview` (lightweight design-index counts and bounded samples; exact OpenAPI endpoint/path/schema counts are populated after schema data is cached)
 - `apifox_api_list`, `apifox_api_get`
 - `apifox_schema_list`, `apifox_schema_get`
 - `apifox_tag_list`, `apifox_tag_apis`
 - `apifox_audit`, `apifox_export_openapi`
+
+Discovery commands share a long-lived Go read session. Endpoint navigation and tags use the
+lightweight endpoint index; endpoint reads, overview, tags, and audits avoid OpenAPI export, while
+schema commands reuse one cached OpenAPI snapshot. Successful applies invalidate the read cache.
+Structured MCP output recursively redacts credentials, sensitive examples, and project IDs. Exact
+endpoint misses return `ok: false` with `API_NOT_FOUND`; paths without a leading slash are normalized
+before lookup. Endpoint/schema lists return summaries instead of full descriptions.
 
 Controlled changes:
 
@@ -194,6 +208,13 @@ apifox-cli apply-docs --file .apifox-docs.json --dry-run
 apifox-cli apply-docs --file .apifox-docs.json
 ```
 
+Endpoint `update` and `upsert` entries may be partial: `path` and `method` identify the
+endpoint, while only the supplied documentation fields are merged. Parameter lists support
+`query_params`, `path_params`, `header_params`, and `cookie_params` (with `cookies` accepted as
+an alias), plus generic OpenAPI-style `parameters` entries with `in: query|path|header|cookie`.
+Create entries remain strict and require complete request/response documentation.
+For a standalone partial endpoint file, validate with `validate-endpoint --update --file FILE`.
+
 For broad writes, apply batches with `--offset` and `--limit`:
 
 ```bash
@@ -252,7 +273,7 @@ The Skill instructs the agent to:
 
 ## JSON Spec Rules
 
-Endpoint specs must include a business `title`, `path`, `method`, `description`, structured request/response schemas, and real examples. Every schema field and parameter must include `description`.
+Endpoint create specs must include a business `title`, `path`, `method`, `description`, structured request/response schemas, and real examples. Endpoint update/upsert specs require only `path` and `method`, plus the fields being changed. Every supplied schema field and parameter must include `description`.
 
 Example `.apifox-endpoint.json`:
 
@@ -287,6 +308,15 @@ Example `.apifox-endpoint.json`:
 ## Import And Export
 
 OpenAPI import/export remains available for migration, backup, and compatibility work. It is not the primary AI authoring path. Export includes Apifox extension fields such as `x-apifox-folder` by default; use `--exclude-apifox-extensions` only when a portable spec is required.
+
+Use `-o` or `--output` for export files (`--file` is accepted only as a deprecated compatibility alias). Do not use a reduced OpenAPI document with `OVERWRITE_EXISTING` for routine documentation updates: omitted parameters, bodies, examples, tags, or folders can be removed. Prefer `apply-docs`, lightweight tag/folder commands, and `AUTO_MERGE`. Always read back changed endpoints because Apifox import counters do not prove persistence for every endpoint shape.
+
+Known Apifox service limitations: exported `x-apifox-folder` and `tags` are not authoritative;
+use `api get`, `tag list`, and `folder list` for metadata checks. Folderless/root-path endpoints
+may report an update without persisting descriptions, and some apparently empty folders cannot
+be deleted because hidden cases or descendants remain. Treat these as explicit manual/probe
+cases. Monitor `components.schemas` counts and export size during bulk work because repeated
+imports can cause schema growth.
 
 ```bash
 apifox-cli export-openapi --format JSON --oas-version 3.1 -o .apifox-openapi.json

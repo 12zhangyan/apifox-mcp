@@ -16,7 +16,7 @@ from mcp_types import ToolAnnotations
 
 from . import __version__
 from .audit import AuditEvent, AuditLogger
-from .cli_gateway import CliGateway
+from .cli_gateway import CliGateway, redact_data
 from .errors import McpServiceError
 from .models import ChangeKind, ChangePlanData, ErrorInfo, ResultMeta, ToolResult
 from .plans import PlanStore
@@ -99,7 +99,7 @@ def _success(
         tool=tool,
         project_id=settings.project_label,
         mode=mode,
-        data=data,
+        data=redact_data(data, (settings.token, settings.project_id)),
         meta=ResultMeta(duration_ms=duration_ms, cli_version=cli_version),
     )
 
@@ -122,11 +122,13 @@ def _failure(
         mode=mode,
         error=ErrorInfo(
             code=error.code,
-            message=error.message,
+            message=str(redact_data(error.message, (settings.token, settings.project_id))),
             retryable=error.retryable,
             exit_code=error.exit_code,
             apifox_status=error.apifox_status,
-            details=error.details,
+            details=redact_data(error.details, (settings.token, settings.project_id))
+            if error.details is not None
+            else None,
         ),
         meta=ResultMeta(duration_ms=duration_ms, cli_version=cli_version),
     )
@@ -163,6 +165,9 @@ def create_server(
                 "audit": audit,
             }
         finally:
+            close_gateway = getattr(gateway, "close", None)
+            if close_gateway is not None:
+                await close_gateway()
             await audit.close()
 
     server = MCPServer(
@@ -185,18 +190,33 @@ def create_server(
         args: list[str],
         ctx: Context,
         expect_json: bool = True,
+        use_read_session: bool = True,
     ) -> ToolResult:
         request_id = _request_id()
         started = time.perf_counter()
         try:
-            response = await gateway.run(args, expect_json=expect_json)
+            run_read_command = getattr(gateway, "run_read", None)
+            if run_read_command is not None and expect_json and use_read_session:
+                response = await run_read_command(args)
+            else:
+                response = await gateway.run(args, expect_json=expect_json)
             version = await gateway.version()
+            data = redact_data(
+                response.data,
+                (settings.token, settings.project_id),
+            )
+            if data.get("found") is False:
+                raise McpServiceError(
+                    "API_NOT_FOUND" if tool in {"apifox_api_get", "apifox_audit"} else "NOT_FOUND",
+                    str(data.get("message") or "Apifox resource was not found"),
+                    details={key: value for key, value in data.items() if key != "message"},
+                )
             result = _success(
                 settings,
                 request_id=request_id,
                 tool=tool,
                 mode="read",
-                data=response.data,
+                data=data,
                 duration_ms=response.duration_ms,
                 cli_version=version,
             )
@@ -243,9 +263,17 @@ def create_server(
     )
     async def apifox_project_check(ctx: Context) -> ToolResult:
         """Check local configuration and connectivity without exposing credentials."""
-        return await run_read(
+        result = await run_read(
             tool="apifox_project_check", args=["config", "check", "--json"], ctx=ctx
         )
+        if result.ok:
+            result.data["capabilities"] = {
+                "read": True,
+                "plan": settings.write_mode.value in {"plan", "apply"},
+                "apply": settings.write_mode.value == "apply",
+            }
+            result.data["write_mode"] = settings.write_mode.value
+        return result
 
     @server.tool(
         title="Get Apifox project overview",
@@ -281,9 +309,10 @@ def create_server(
     @server.tool(title="Get one Apifox endpoint", annotations=READ_ONLY, structured_output=True)
     async def apifox_api_get(ctx: Context, method: str, path: str) -> ToolResult:
         """Get one endpoint by HTTP method and exact path."""
+        normalized_path = path if path.startswith("/") else "/" + path
         return await run_read(
             tool="apifox_api_get",
-            args=["api", "get", "--method", method.upper(), "--path", path, "--json"],
+            args=["api", "get", "--method", method.upper(), "--path", normalized_path, "--json"],
             ctx=ctx,
         )
 
@@ -325,7 +354,7 @@ def create_server(
         method: str = "",
         path: str = "",
         tag: str = "",
-        style: Literal["kebab-case", "snake_case", "camelCase"] = "kebab-case",
+        style: Literal["project", "kebab-case", "snake_case", "camelCase"] = "project",
         show_complete: bool = False,
     ) -> ToolResult:
         """Audit response completeness, path naming, or project consistency."""
@@ -362,6 +391,7 @@ def create_server(
             tool="apifox_export_openapi",
             args=["export-openapi", "--format", "JSON", "--oas-version", oas_version],
             ctx=ctx,
+            use_read_session=False,
         )
 
     def change_commands(
@@ -548,7 +578,12 @@ def create_server(
                     payload_sha256=record.payload_sha256,
                 )
             )
-            response = await gateway.run(record.args, stdin_payload=record.stdin_payload)
+            try:
+                response = await gateway.run(record.args, stdin_payload=record.stdin_payload)
+            finally:
+                invalidate_read_cache = getattr(gateway, "invalidate_read_cache", None)
+                if invalidate_read_cache is not None:
+                    await invalidate_read_cache()
             await plans.finish(plan_id, success=True)
             await audit.record(
                 AuditEvent(

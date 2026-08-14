@@ -1,6 +1,6 @@
 [project]
 name = "apifox-cli"
-version = "0.3.0"
+version = "0.3.1"
 description = "Enterprise MCP server and Go CLI for managing Apifox/OpenAPI documentation"
 readme = "README.md"
 requires-python = ">=3.10"

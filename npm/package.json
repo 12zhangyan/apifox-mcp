@@ -1,6 +1,6 @@
 {
   "name": "@yanzhang123/apifox-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Enterprise Apifox MCP server for Windows with bundled runtimes",
   "license": "MIT",
   "type": "commonjs",
