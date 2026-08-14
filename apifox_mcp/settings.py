@@ -79,6 +79,7 @@ class Settings:
     cli_path: str
     write_mode: WriteMode
     cli_timeout_seconds: int
+    read_cache_ttl_seconds: int
     max_input_bytes: int
     max_output_bytes: int
     max_concurrency: int
@@ -122,6 +123,7 @@ class Settings:
             cli_path=cli_path,
             write_mode=write_mode,
             cli_timeout_seconds=_env_int("APIFOX_MCP_CLI_TIMEOUT", 120),
+            read_cache_ttl_seconds=_env_int("APIFOX_MCP_READ_CACHE_TTL", 300),
             max_input_bytes=_env_int("APIFOX_MCP_MAX_INPUT_BYTES", 2 * 1024 * 1024),
             max_output_bytes=_env_int("APIFOX_MCP_MAX_OUTPUT_BYTES", 8 * 1024 * 1024),
             max_concurrency=_env_int("APIFOX_MCP_MAX_CONCURRENCY", 4),

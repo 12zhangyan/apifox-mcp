@@ -22,6 +22,9 @@ class FakeGateway:
     async def version(self) -> str:
         return "apifox-cli test-version"
 
+    async def close(self) -> None:
+        return None
+
     async def run(
         self,
         args: list[str] | tuple[str, ...],
@@ -43,6 +46,35 @@ class FakeGateway:
                 1,
             )
         return GatewayResponse({"result": "ok"}, 1)
+
+
+class ReadGateway(FakeGateway):
+    def __init__(self, responses: dict[tuple[str, ...], dict[str, Any]]) -> None:
+        super().__init__()
+        self.responses = responses
+
+    async def run_read(self, args: list[str] | tuple[str, ...]) -> GatewayResponse:
+        self.calls.append((tuple(args), None))
+        return GatewayResponse(self.responses[tuple(args)], 1)
+
+    async def close(self) -> None:
+        return None
+
+
+def test_explicit_openapi_export_bypasses_restricted_read_session() -> None:
+    async def scenario() -> None:
+        gateway = ReadGateway({})
+        server = create_server(
+            make_settings(), gateway=gateway, audit=AuditLogger(stream=io.StringIO())
+        )
+        async with Client(server) as client:
+            result = await client.call_tool("apifox_export_openapi", {})
+            assert result.structured_content["ok"] is True
+        assert gateway.calls == [
+            (("export-openapi", "--format", "JSON", "--oas-version", "3.1"), None)
+        ]
+
+    asyncio.run(scenario())
 
 
 def test_tool_discovery_and_structured_read_result() -> None:
@@ -202,5 +234,46 @@ def test_batch_and_empty_folder_change_kinds_route_to_cli_stdin() -> None:
                 assert args[:2] == prefix
                 assert args[-2:] == ("--dry-run", "--json")
                 assert payload == spec
+
+    asyncio.run(scenario())
+
+
+def test_project_check_reports_actual_write_capabilities_and_redacts_nested_project_id() -> None:
+    async def scenario() -> None:
+        args = ("config", "check", "--json")
+        gateway = ReadGateway(
+            {args: {"configured": True, "connected": True, "project_id": "project-1234"}}
+        )
+        server = create_server(
+            make_settings(write_mode=WriteMode.APPLY),
+            gateway=gateway,
+            audit=AuditLogger(stream=io.StringIO()),
+        )
+        async with Client(server) as client:
+            result = await client.call_tool("apifox_project_check", {})
+            data = result.structured_content["data"]
+            assert data["project_id"] == "[REDACTED]"
+            assert data["write_mode"] == "apply"
+            assert data["capabilities"] == {"read": True, "plan": True, "apply": True}
+
+    asyncio.run(scenario())
+
+
+def test_api_get_normalizes_path_and_returns_failure_for_not_found() -> None:
+    async def scenario() -> None:
+        args = ("api", "get", "--method", "GET", "--path", "/missing", "--json")
+        gateway = ReadGateway(
+            {args: {"found": False, "method": "GET", "path": "/missing", "message": "missing"}}
+        )
+        server = create_server(
+            make_settings(), gateway=gateway, audit=AuditLogger(stream=io.StringIO())
+        )
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "apifox_api_get", {"method": "get", "path": "missing"}
+            )
+            assert result.structured_content["ok"] is False
+            assert result.structured_content["error"]["code"] == "API_NOT_FOUND"
+            assert gateway.calls[0][0] == args
 
     asyncio.run(scenario())

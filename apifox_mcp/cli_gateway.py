@@ -7,6 +7,7 @@ import json
 import os
 import re
 import time
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -34,6 +35,10 @@ _VALIDATION_FAILURE_RE = re.compile(r"(?:校验失败|validation failed)", re.IG
 _SECRET_RE = re.compile(
     r"(?i)(authorization\s*[:=]\s*bearer\s+|bearer\s+|token\s*[:=]\s*|cookie\s*[:=]\s*)[^\s,;]+"
 )
+_SENSITIVE_KEY_RE = re.compile(
+    r"(?i)(?:password|passwd|pwd|secret|token|authorization|cookie|api[-_]?key|session|credential|project[-_]?id)"
+)
+_SENSITIVE_VALUE_KEYS = {"example", "examples", "default", "value", "enum", "const"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +53,48 @@ def redact_text(value: str, secrets: Sequence[str | None] = ()) -> str:
         if secret:
             redacted = redacted.replace(secret, "[REDACTED]")
     return _SECRET_RE.sub(lambda match: match.group(1) + "[REDACTED]", redacted)
+
+
+def redact_data(value: Any, secrets: Sequence[str | None] = (), *, sensitive: bool = False) -> Any:
+    """Recursively redact credentials and examples while retaining schema structure."""
+    if isinstance(value, dict):
+        named_sensitive = _SENSITIVE_KEY_RE.search(str(value.get("name", ""))) is not None
+        result: dict[str, Any] = {}
+        for raw_key, child in value.items():
+            key = str(raw_key)
+            key_sensitive = _SENSITIVE_KEY_RE.search(key) is not None
+            redact_leaf = (sensitive or named_sensitive) and key.lower() in _SENSITIVE_VALUE_KEYS
+            if redact_leaf:
+                result[key] = "[REDACTED]"
+            elif key_sensitive and not isinstance(child, (dict, list)):
+                result[key] = "[REDACTED]"
+            else:
+                result[key] = redact_data(
+                    child,
+                    secrets,
+                    sensitive=sensitive or named_sensitive or key_sensitive,
+                )
+        return result
+    if isinstance(value, list):
+        return [redact_data(child, secrets, sensitive=sensitive) for child in value]
+    if isinstance(value, str):
+        redacted = value
+        for secret in secrets:
+            if secret:
+                redacted = redacted.replace(secret, "[REDACTED]")
+        if redacted.lstrip().startswith(("{", "[")):
+            try:
+                decoded = json.loads(redacted)
+            except json.JSONDecodeError:
+                pass
+            else:
+                return json.dumps(
+                    redact_data(decoded, secrets, sensitive=sensitive),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+        return redact_text(redacted)
+    return value
 
 
 def _business_failure(payload: dict[str, Any]) -> tuple[str, int | None] | None:
@@ -89,6 +136,8 @@ class CliGateway:
         self.command = tuple(command or (settings.cli_path,))
         self._semaphore = asyncio.Semaphore(settings.max_concurrency)
         self._version: str | None = None
+        self._read_process: asyncio.subprocess.Process | None = None
+        self._read_lock = asyncio.Lock()
 
     def _environment(self) -> dict[str, str]:
         env = {key: value for key in _SAFE_ENV_KEYS if (value := os.getenv(key)) is not None}
@@ -97,6 +146,7 @@ class CliGateway:
         if self.settings.project_id:
             env["APIFOX_PROJECT_ID"] = self.settings.project_id
         env["APIFOX_BASE_URL"] = self.settings.base_url
+        env["APIFOX_MCP_READ_CACHE_TTL"] = str(self.settings.read_cache_ttl_seconds)
         return env
 
     async def version(self) -> str | None:
@@ -118,6 +168,110 @@ class CliGateway:
         expect_json: bool = True,
     ) -> GatewayResponse:
         return await self._invoke(tuple(args), stdin_payload, expect_json=expect_json)
+
+    async def run_read(self, args: Sequence[str]) -> GatewayResponse:
+        started = time.perf_counter()
+        async with self._read_lock:
+            process = await self._ensure_read_process()
+            request_id = "read_" + uuid.uuid4().hex
+            request = json.dumps(
+                {"id": request_id, "args": [arg for arg in args if arg != "--json"]},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8") + b"\n"
+            assert process.stdin is not None
+            assert process.stdout is not None
+            try:
+                process.stdin.write(request)
+                await process.stdin.drain()
+                line = await asyncio.wait_for(
+                    process.stdout.readline(), timeout=self.settings.cli_timeout_seconds
+                )
+            except TimeoutError as exc:
+                await self._stop_read_process()
+                raise GatewayError(
+                    "CLI_TIMEOUT",
+                    f"apifox-cli read session exceeded {self.settings.cli_timeout_seconds} seconds",
+                    retryable=True,
+                ) from exc
+            except (BrokenPipeError, ConnectionError) as exc:
+                await self._stop_read_process()
+                raise GatewayError(
+                    "CLI_FAILED", "apifox-cli read session stopped", retryable=True
+                ) from exc
+            if not line:
+                await self._stop_read_process()
+                raise GatewayError(
+                    "CLI_FAILED",
+                    "apifox-cli read session returned no response",
+                    retryable=True,
+                )
+            if len(line) > self.settings.max_output_bytes:
+                raise GatewayError(
+                    "CLI_OUTPUT_TOO_LARGE",
+                    f"apifox-cli output exceeds {self.settings.max_output_bytes} bytes",
+                )
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise GatewayError(
+                    "INVALID_CLI_OUTPUT", "apifox-cli read session returned invalid JSON"
+                ) from exc
+            if response.get("id") != request_id:
+                raise GatewayError(
+                    "INVALID_CLI_OUTPUT", "apifox-cli read session response ID mismatch"
+                )
+            if response.get("ok") is not True:
+                raw_error = response.get("error") if isinstance(response.get("error"), dict) else {}
+                raise GatewayError(
+                    str(raw_error.get("code") or "CLI_FAILED"),
+                    redact_text(
+                        str(raw_error.get("message") or "read command failed"),
+                        (self.settings.token,),
+                    ),
+                )
+            data = response.get("data")
+            if not isinstance(data, dict):
+                data = {"result": data}
+            return GatewayResponse(data, int((time.perf_counter() - started) * 1000))
+
+    async def _ensure_read_process(self) -> asyncio.subprocess.Process:
+        if self._read_process is not None and self._read_process.returncode is None:
+            return self._read_process
+        try:
+            self._read_process = await asyncio.create_subprocess_exec(
+                *self.command,
+                "read-session",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=self._environment(),
+                limit=self.settings.max_output_bytes + 1,
+            )
+        except FileNotFoundError as exc:
+            raise GatewayError(
+                "CLI_NOT_FOUND", f"apifox-cli executable was not found: {self.command[0]}"
+            ) from exc
+        return self._read_process
+
+    async def _stop_read_process(self) -> None:
+        process = self._read_process
+        self._read_process = None
+        if process is None or process.returncode is not None:
+            return
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=2)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+
+    async def invalidate_read_cache(self) -> None:
+        async with self._read_lock:
+            await self._stop_read_process()
+
+    async def close(self) -> None:
+        await self.invalidate_read_cache()
 
     async def _invoke(
         self,

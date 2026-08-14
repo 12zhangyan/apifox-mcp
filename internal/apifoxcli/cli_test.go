@@ -8,8 +8,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func captureRun(t *testing.T, args ...string) (string, error) {
@@ -104,6 +106,56 @@ func TestCommandHelpDoesNotRequireRuntimeInputs(t *testing.T) {
 	}
 }
 
+func TestExportOpenAPIFileCompatibilityAliasMapsToOutput(t *testing.T) {
+	opts, _, err := parseOptions(
+		[]string{"--file", "backup.json"},
+		map[string]bool{"file": true, "output": true},
+		map[string]string{"file": "output"},
+	)
+	if err != nil {
+		t.Fatalf("expected --file compatibility alias to parse, got %v", err)
+	}
+	if got := optString(opts, "output", ""); got != "backup.json" {
+		t.Fatalf("expected output path backup.json, got %q", got)
+	}
+}
+
+func TestExportOpenAPIFileCompatibilityAliasWritesFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/projects/123/export-openapi" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(fakeOpenAPI()); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	output := filepath.Join(t.TempDir(), "export.json")
+	_, err := captureRun(t,
+		"--token", "test-token",
+		"--project-id", "123",
+		"--base-url", server.URL,
+		"export-openapi",
+		"--file", output,
+	)
+	if err != nil {
+		t.Fatalf("expected export to succeed, got %v", err)
+	}
+	raw, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("--file compatibility alias did not write output: %v", err)
+	}
+	var exported map[string]any
+	if err := json.Unmarshal(raw, &exported); err != nil {
+		t.Fatalf("exported file should contain JSON: %v", err)
+	}
+	if exported["openapi"] != "3.0.0" {
+		t.Fatalf("unexpected exported document: %#v", exported)
+	}
+}
+
 func TestConfigCheckJSONFailsWhenCredentialsAreMissing(t *testing.T) {
 	t.Setenv("APIFOX_TOKEN", "")
 	t.Setenv("APIFOX_PROJECT_ID", "")
@@ -133,11 +185,13 @@ func TestConfigCheckJSONFailsWhenCredentialsAreMissing(t *testing.T) {
 func TestConfigCheckCountsEndpointsSeparatelyFromPaths(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{
-			"info":{"title":"Test project"},
-			"paths":{"/orders":{"get":{"summary":"List"},"post":{"summary":"Create"}}},
-			"components":{"schemas":{"Order":{"type":"object"}}}
-		}`)
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/123/http-apis" {
+			t.Fatalf("config check must use lightweight endpoint index, got %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": []any{
+			map[string]any{"id": 1, "method": "GET", "path": "/orders"},
+			map[string]any{"id": 2, "method": "POST", "path": "/orders"},
+		}})
 	}))
 	defer server.Close()
 
@@ -153,21 +207,24 @@ func TestConfigCheckCountsEndpointsSeparatelyFromPaths(t *testing.T) {
 	if payload["endpoint_count"] != 2 || payload["path_count"] != 1 {
 		t.Fatalf("unexpected endpoint/path counts: %#v", payload)
 	}
-	if payload["schema_count"] != 1 {
-		t.Fatalf("unexpected schema count: %#v", payload)
+	if payload["check_scope"] != "connectivity" {
+		t.Fatalf("unexpected config check scope: %#v", payload)
 	}
 }
 
-func TestProjectOverviewUsesOneExportAndReturnsBoundedSamples(t *testing.T) {
+func TestProjectOverviewUsesLightweightIndexAndMarksSchemasUnloaded(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{
-			"info":{"title":"Test docs"},
-			"paths":{"/orders":{"get":{"summary":"List","tags":["Orders"]},"post":{"summary":"Create","tags":["Orders"]}}},
-			"components":{"schemas":{"Order":{"type":"object"},"OrderList":{"type":"array"}}}
-		}`)
+		if r.URL.Path == "/api/v1/projects/123/http-apis" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": []any{
+				map[string]any{"id": 1, "name": "List", "method": "GET", "path": "/orders", "tags": []any{"Orders"}},
+				map[string]any{"id": 2, "name": "Create", "method": "POST", "path": "/orders", "tags": []any{"Orders"}},
+			}})
+			return
+		}
+		t.Fatalf("overview must not export OpenAPI, got %s %s", r.Method, r.URL.Path)
 	}))
 	defer server.Close()
 
@@ -180,15 +237,24 @@ func TestProjectOverviewUsesOneExportAndReturnsBoundedSamples(t *testing.T) {
 		t.Fatalf("expected overview to succeed, got %v", err)
 	}
 	if requests != 1 {
-		t.Fatalf("overview should export exactly once, got %d requests", requests)
+		t.Fatalf("overview should use one lightweight index call, got %d requests", requests)
 	}
 	payload := result.JSON.(map[string]any)
 	counts := payload["counts"].(map[string]any)
-	if counts["endpoints"] != 2 || counts["paths"] != 1 || counts["schemas"] != 2 {
+	if counts["endpoints"] != nil || counts["paths"] != nil || counts["schemas"] != nil {
 		t.Fatalf("unexpected overview counts: %#v", counts)
 	}
+	if counts["design_records"] != 2 || counts["design_paths"] != 1 {
+		t.Fatalf("overview should expose lightweight design-index counts: %#v", counts)
+	}
+	if payload["schema_data_loaded"] != false {
+		t.Fatalf("overview must mark schema data as unloaded: %#v", payload)
+	}
+	if payload["openapi_data_loaded"] != false {
+		t.Fatalf("overview must mark OpenAPI counts as unloaded: %#v", payload)
+	}
 	samples := payload["samples"].(map[string]any)
-	if len(samples["endpoints"].([]map[string]any)) != 1 || len(samples["schemas"].([]map[string]any)) != 1 {
+	if len(samples["endpoints"].([]map[string]any)) != 1 || len(samples["schemas"].([]map[string]any)) != 0 {
 		t.Fatalf("overview samples should respect limit: %#v", samples)
 	}
 }
@@ -284,17 +350,141 @@ func TestEndpointListJSONIsStructured(t *testing.T) {
 	if endpoints[0]["method"] != "GET" || endpoints[0]["path"] != "/orders" {
 		t.Fatalf("unexpected endpoint payload: %#v", endpoints[0])
 	}
+	if _, exists := endpoints[0]["description"]; exists {
+		t.Fatalf("endpoint list must omit full descriptions: %#v", endpoints[0])
+	}
+}
+
+func TestSchemaListRanksNamedSchemasBeforeEmptyAndNumericNames(t *testing.T) {
+	openapi := map[string]any{"components": map[string]any{"schemas": map[string]any{
+		"": map[string]any{"type": "object"}, "10": map[string]any{"type": "object"},
+		"RegisterRequest": map[string]any{"type": "object"}, "Account": map[string]any{"type": "object"},
+	}}}
+	infos := collectSchemaInfos(openapi, "")
+	if got := []string{infos[0].Name, infos[1].Name}; !reflect.DeepEqual(got, []string{"Account", "RegisterRequest"}) {
+		t.Fatalf("useful schemas should sort first, got %v", got)
+	}
+	payload := schemaListJSON(infos, infos[:2], "", 2)
+	if _, exists := payload["schemas"].([]map[string]any)[0]["description"]; exists {
+		t.Fatalf("schema list must omit full descriptions: %#v", payload)
+	}
+}
+
+func TestAPIGetUsesLightweightIndexWithoutOpenAPIExport(t *testing.T) {
+	var indexCalls, exportCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/projects/123/http-apis":
+			indexCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": []any{map[string]any{
+				"id": 11, "name": "Register", "method": "POST", "path": "/api/register", "tags": []any{"Auth"},
+				"parameters": map[string]any{"header": []any{map[string]any{"name": "Cookie", "type": "string"}}},
+				"responses": []any{map[string]any{
+					"id": "response-200", "code": 200, "description": "OK", "contentType": "application/json",
+					"jsonSchema": map[string]any{"type": "object"},
+				}},
+				"responseExamples": []any{map[string]any{
+					"id": "example-1", "responseId": "response-200", "name": "Success",
+					"data": `{"password":"plain","displayName":"Alice"}`,
+				}},
+			}}})
+		case "/v1/projects/123/export-openapi":
+			exportCalls++
+			t.Fatal("api get must not export OpenAPI")
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	app := App{Config: Config{Token: "test", ProjectID: "123", BaseURL: server.URL}, Client: server.Client(), ReadCacheTTL: time.Minute}
+	first, err := app.getEndpointDetail("api/register", "post")
+	if err != nil || first.JSON.(map[string]any)["found"] != true {
+		t.Fatalf("expected endpoint detail, got %#v, %v", first.JSON, err)
+	}
+	operation := first.JSON.(map[string]any)["operation"].(map[string]any)
+	response := operation["responses"].(map[string]any)["200"].(map[string]any)
+	media := response["content"].(map[string]any)["application/json"].(map[string]any)
+	examples := media["examples"].(map[string]any)
+	if len(examples) != 1 {
+		t.Fatalf("api get should retain response examples, got %#v", media)
+	}
+	value := examples["Success"].(map[string]any)["value"].(map[string]any)
+	if value["password"] != "plain" || value["displayName"] != "Alice" {
+		t.Fatalf("response example JSON should be decoded structurally, got %#v", value)
+	}
+	miss, err := app.getEndpointDetail("/missing", "GET")
+	if err != nil || miss.JSON.(map[string]any)["found"] != false {
+		t.Fatalf("expected fast miss, got %#v, %v", miss.JSON, err)
+	}
+	_, _ = app.getEndpointDetail("/api/register", "POST")
+	if indexCalls != 1 || exportCalls != 0 {
+		t.Fatalf("expected cached index/detail and no export for miss, index=%d export=%d", indexCalls, exportCalls)
+	}
+}
+
+func TestPathNamingProjectStyleAcceptsCamelCaseAndReportsSuggestions(t *testing.T) {
+	app := App{ReadCacheTTL: time.Minute, httpAPIRecords: []httpAPIRecord{
+		{ID: 1, Method: "GET", Path: "/getCaptcha", Name: "Captcha", Detail: map[string]any{}},
+		{ID: 2, Method: "POST", Path: "/Bad_Path", Name: "Bad", Detail: map[string]any{}},
+	}, httpAPIRecordsAt: time.Now()}
+	app.Config = Config{Token: "test", ProjectID: "123"}
+	result, err := app.checkPathNaming("project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := result.JSON.(map[string]any)["issues"].([]map[string]any)
+	if len(issues) != 1 || issues[0]["method"] != "POST" || issues[0]["expected"] != "badPath" {
+		t.Fatalf("unexpected naming issues: %#v", issues)
+	}
+}
+
+func TestUncategorizedTagRoundTripsFromTagListToTagAPIs(t *testing.T) {
+	app := App{
+		Config:       Config{Token: "test", ProjectID: "123"},
+		ReadCacheTTL: time.Minute,
+		httpAPIRecords: []httpAPIRecord{
+			{ID: 1, Method: "GET", Path: "/untagged", Name: "Untagged", Detail: map[string]any{}},
+			{ID: 2, Method: "GET", Path: "/tagged", Name: "Tagged", Tags: []string{"Orders"}, Detail: map[string]any{}},
+		},
+		httpAPIRecordsAt: time.Now(),
+	}
+	tagResult, err := app.listTags()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tags := tagResult.JSON.(map[string]any)["tags"].([]map[string]any)
+	if len(tags) != 2 {
+		t.Fatalf("expected tagged and uncategorized groups, got %#v", tags)
+	}
+	apiResult, err := app.getAPIsByTag("未分类")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := apiResult.JSON.(map[string]any)
+	if payload["total"] != 1 {
+		t.Fatalf("uncategorized tag should resolve to its endpoint, got %#v", payload)
+	}
 }
 
 func TestDiscoveryJSONCommandsUseStructuredOutput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/projects/123/export-openapi" {
-			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
-		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Fatalf("unexpected authorization header: %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/123/http-apis" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": []any{map[string]any{
+					"id": 11, "name": "获取订单列表", "method": "GET", "path": "/orders", "tags": []any{"订单管理"},
+				}},
+			})
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/projects/123/export-openapi" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
 		if err := json.NewEncoder(w).Encode(fakeOpenAPI()); err != nil {
 			t.Fatal(err)
 		}
@@ -344,6 +534,7 @@ func TestDiscoveryJSONCommandsUseStructuredOutput(t *testing.T) {
 
 func TestWriteCommandsJSONUseStructuredOutput(t *testing.T) {
 	var importRequests int
+	var importPayloads []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/projects/123/import-openapi" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -356,6 +547,7 @@ func TestWriteCommandsJSONUseStructuredOutput(t *testing.T) {
 		if strings.TrimSpace(toString(payload["input"])) == "" {
 			t.Fatalf("import payload should include input: %#v", payload)
 		}
+		importPayloads = append(importPayloads, payload)
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(map[string]any{
 			"data": map[string]any{
@@ -409,10 +601,19 @@ func TestWriteCommandsJSONUseStructuredOutput(t *testing.T) {
 			if _, ok := payload["import_result"].(map[string]any); !ok {
 				t.Fatalf("payload should include import_result: %#v", payload)
 			}
+			if tc.kind == "endpoint" {
+				if payload["persistence_verified"] != false || payload["read_back_verification_needed"] != true {
+					t.Fatalf("endpoint result must require read-back verification: %#v", payload)
+				}
+			}
 		})
 	}
 	if importRequests != len(cases) {
 		t.Fatalf("expected %d import requests, got %d", len(cases), importRequests)
+	}
+	options := mustMap(t, importPayloads[0]["options"])
+	if options["endpointOverwriteBehavior"] != "AUTO_MERGE" || options["schemaOverwriteBehavior"] != "AUTO_MERGE" {
+		t.Fatalf("endpoint upsert must use non-destructive merge options: %#v", options)
 	}
 }
 
@@ -545,6 +746,91 @@ func TestBuildOpenAPISpecPayloadContract(t *testing.T) {
 	errorSchema := mustMap(t, errorJSON["schema"])
 	if errorSchema["$ref"] != "#/components/schemas/ErrorResponse" {
 		t.Fatalf("unexpected error schema ref: %#v", errorSchema)
+	}
+}
+
+func TestPartialEndpointUpdateOnlyEmitsProvidedFields(t *testing.T) {
+	spec := map[string]any{
+		"path":        "/orders/{id}",
+		"method":      "POST",
+		"description": "Updated business description",
+	}
+	if errors := validateEndpointSpec(spec, true); len(errors) > 0 {
+		t.Fatalf("partial update should validate, got %v", errors)
+	}
+
+	openapi := buildOpenAPISpec(spec, true)
+	operation := mustMap(t, mustMap(t, mustMap(t, openapi["paths"])["/orders/{id}"])["post"])
+	if operation["description"] != "Updated business description" {
+		t.Fatalf("unexpected description: %#v", operation)
+	}
+	for _, field := range []string{"summary", "tags", "requestBody", "responses"} {
+		if _, exists := operation[field]; exists {
+			t.Fatalf("partial update must not emit omitted field %q: %#v", field, operation)
+		}
+	}
+	schemas := mustMap(t, mustMap(t, openapi["components"])["schemas"])
+	if len(schemas) != 0 {
+		t.Fatalf("description-only update must not create schemas: %#v", schemas)
+	}
+}
+
+func TestPartialEndpointUpdateInlinesResponseSchema(t *testing.T) {
+	spec := map[string]any{
+		"path":   "/orders/{id}",
+		"method": "GET",
+		"response_schema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "integer", "description": "Order ID"},
+			},
+		},
+	}
+	if errors := validateEndpointSpec(spec, true); len(errors) > 0 {
+		t.Fatalf("partial response update should validate, got %v", errors)
+	}
+	openapi := buildOpenAPISpec(spec, true)
+	operation := mustMap(t, mustMap(t, mustMap(t, openapi["paths"])["/orders/{id}"])["get"])
+	responses := mustMap(t, operation["responses"])
+	success := mustMap(t, responses["200"])
+	content := mustMap(t, mustMap(t, success["content"])["application/json"])
+	schema := mustMap(t, content["schema"])
+	if _, isReference := schema["$ref"]; isReference {
+		t.Fatalf("partial update should inline schema instead of creating a component: %#v", schema)
+	}
+}
+
+func TestEndpointCookieParamsUseOpenAPICookieLocation(t *testing.T) {
+	for _, field := range []string{"cookie_params", "cookies", "parameters"} {
+		t.Run(field, func(t *testing.T) {
+			parameterSpec := map[string]any{"name": "AuthenticationToken", "type": "string", "required": true, "description": "Authentication token"}
+			if field == "parameters" {
+				parameterSpec["in"] = "cookie"
+				delete(parameterSpec, "type")
+				parameterSpec["schema"] = map[string]any{"type": "string", "format": "token"}
+			}
+			spec := map[string]any{
+				"path":   "/orders/{id}",
+				"method": "GET",
+				field:    []any{parameterSpec},
+			}
+			if errors := validateEndpointSpec(spec, true); len(errors) > 0 {
+				t.Fatalf("cookie parameter update should validate, got %v", errors)
+			}
+			openapi := buildOpenAPISpec(spec, true)
+			operation := mustMap(t, mustMap(t, mustMap(t, openapi["paths"])["/orders/{id}"])["get"])
+			parameters, ok := toSlice(operation["parameters"])
+			if !ok || len(parameters) != 1 {
+				t.Fatalf("expected one cookie parameter, got %#v", operation["parameters"])
+			}
+			parameter := mustMap(t, parameters[0])
+			if parameter["name"] != "AuthenticationToken" || parameter["in"] != "cookie" {
+				t.Fatalf("unexpected cookie parameter: %#v", parameter)
+			}
+			if field == "parameters" && mustMap(t, parameter["schema"])["format"] != "token" {
+				t.Fatalf("generic parameter schema was not preserved: %#v", parameter)
+			}
+		})
 	}
 }
 

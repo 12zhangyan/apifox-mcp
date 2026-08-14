@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type endpointMetaSpec struct {
@@ -25,6 +26,7 @@ type httpAPIRecord struct {
 	Path     string
 	FolderID int
 	Tags     []string
+	Detail   map[string]any
 }
 
 type folderRecord struct {
@@ -209,6 +211,9 @@ func (a *App) listHTTPAPIRecords() ([]httpAPIRecord, error) {
 	if err := a.requireConfig(); err != nil {
 		return nil, err
 	}
+	if a.httpAPIRecords != nil && time.Since(a.httpAPIRecordsAt) < a.ReadCacheTTL {
+		return a.httpAPIRecords, nil
+	}
 	const pageSize = 100
 	records := make([]httpAPIRecord, 0)
 	seen := map[int]bool{}
@@ -240,6 +245,7 @@ func (a *App) listHTTPAPIRecords() ([]httpAPIRecord, error) {
 				Path:     path,
 				FolderID: toInt(item["folderId"], 0),
 				Tags:     stringItems(item["tags"]),
+				Detail:   item,
 			})
 		}
 
@@ -259,6 +265,8 @@ func (a *App) listHTTPAPIRecords() ([]httpAPIRecord, error) {
 			break
 		}
 	}
+	a.httpAPIRecords = records
+	a.httpAPIRecordsAt = time.Now()
 	return records, nil
 }
 
@@ -269,6 +277,12 @@ func findHTTPAPI(records []httpAPIRecord, method string, path string) (httpAPIRe
 		}
 	}
 	return httpAPIRecord{}, fail(1, "endpoint not found: %s %s", method, path)
+}
+
+func (a *App) refreshHTTPAPIRecords() ([]httpAPIRecord, error) {
+	a.httpAPIRecords = nil
+	a.httpAPIRecordsAt = time.Time{}
+	return a.listHTTPAPIRecords()
 }
 
 func flattenFolderItems(value any, inferredParent int, out *[]folderRecord) {

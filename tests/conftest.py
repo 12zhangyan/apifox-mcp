@@ -16,6 +16,7 @@ def make_settings(**overrides: Any) -> Settings:
         write_mode=WriteMode.PLAN,
         audit_log_path=None,
         cli_timeout_seconds=2,
+        read_cache_ttl_seconds=60,
         max_input_bytes=4096,
         max_output_bytes=4096,
         max_concurrency=2,

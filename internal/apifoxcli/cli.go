@@ -1,6 +1,7 @@
 package apifoxcli
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -36,11 +37,13 @@ var (
 	endpointFields = set(
 		"title", "path", "method", "description", "response_schema", "response_example",
 		"folder_id", "status", "tags", "query_params", "path_params", "header_params",
+		"cookie_params", "cookies", "parameters",
 		"request_body_type", "request_body_schema", "request_body_example", "responses",
 	)
 	endpointUpdateFields = set(
 		"title", "path", "method", "description", "response_schema", "response_example",
 		"folder_id", "status", "tags", "query_params", "path_params", "header_params",
+		"cookie_params", "cookies", "parameters",
 		"request_body_type", "request_body_schema", "request_body_example", "responses",
 		"new_path", "new_method",
 	)
@@ -54,15 +57,17 @@ var (
 	docsFields          = set("endpoints", "crud")
 	docsEndpointActions = set("create", "update", "upsert")
 
-	pathParamRE      = regexp.MustCompile(`\{([^}/]+)\}`)
-	pathNormalizeRE  = regexp.MustCompile(`\{[^}/]+\}`)
-	splitNameRE      = regexp.MustCompile(`[-_/]+`)
-	versionPathPart  = regexp.MustCompile(`^v[0-9]+$`)
-	successCodeRE    = regexp.MustCompile(`^2[0-9][0-9]$`)
-	kebabSegmentRE   = regexp.MustCompile(`^[a-z0-9{}]+(-[a-z0-9{}]+)*$`)
-	snakeSegmentRE   = regexp.MustCompile(`^[a-z0-9{}]+(_[a-z0-9{}]+)*$`)
-	camelSegmentRE   = regexp.MustCompile(`^[a-z][A-Za-z0-9{}]*$`)
-	placeholderNames = set("", "string", "integer", "number", "boolean", "array", "object")
+	pathParamRE       = regexp.MustCompile(`\{([^}/]+)\}`)
+	pathNormalizeRE   = regexp.MustCompile(`\{[^}/]+\}`)
+	splitNameRE       = regexp.MustCompile(`[-_/]+`)
+	camelBoundaryRE   = regexp.MustCompile(`([a-z0-9])([A-Z])`)
+	acronymBoundaryRE = regexp.MustCompile(`([A-Z]+)([A-Z][a-z])`)
+	versionPathPart   = regexp.MustCompile(`^v[0-9]+$`)
+	successCodeRE     = regexp.MustCompile(`^2[0-9][0-9]$`)
+	kebabSegmentRE    = regexp.MustCompile(`^[a-z0-9{}]+(-[a-z0-9{}]+)*$`)
+	snakeSegmentRE    = regexp.MustCompile(`^[a-z0-9{}]+(_[a-z0-9{}]+)*$`)
+	camelSegmentRE    = regexp.MustCompile(`^[a-z][A-Za-z0-9{}]*$`)
+	placeholderNames  = set("", "string", "integer", "number", "boolean", "array", "object")
 )
 
 type Config struct {
@@ -72,8 +77,13 @@ type Config struct {
 }
 
 type App struct {
-	Config Config
-	Client *http.Client
+	Config           Config
+	Client           *http.Client
+	ReadCacheTTL     time.Duration
+	openAPICache     map[string]any
+	openAPICacheAt   time.Time
+	httpAPIRecords   []httpAPIRecord
+	httpAPIRecordsAt time.Time
 }
 
 type commandError struct {
@@ -112,8 +122,9 @@ func run(args []string) error {
 	}
 
 	app := &App{
-		Config: cfg,
-		Client: &http.Client{Timeout: 30 * time.Second},
+		Config:       cfg,
+		Client:       &http.Client{Timeout: 120 * time.Second},
+		ReadCacheTTL: readCacheTTL(),
 	}
 
 	command := rest[0]
@@ -133,6 +144,8 @@ func run(args []string) error {
 		return app.cmdFolder(commandArgs)
 	case "audit":
 		return app.cmdAudit(commandArgs)
+	case "read-session":
+		return app.cmdReadSession(commandArgs)
 	case "endpoint-template":
 		return app.cmdEndpointTemplate(commandArgs)
 	case "validate-endpoint":
@@ -170,6 +183,18 @@ func run(args []string) error {
 	}
 }
 
+func readCacheTTL() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("APIFOX_MCP_READ_CACHE_TTL"))
+	if raw == "" {
+		return 5 * time.Minute
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < 1 {
+		return 5 * time.Minute
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 func printHelp() {
 	fmt.Println(`usage: apifox-cli [--token TOKEN] [--project-id PROJECT_ID] [--base-url BASE_URL] <command> [options]
 
@@ -178,7 +203,7 @@ CLI for AI-authored Apifox/OpenAPI documentation.
 Commands:
   version               Print CLI version
   config check          Check Apifox credentials and project connectivity
-  overview              Get project counts and samples in one export
+  overview              Get lightweight project counts and bounded samples
   api list              List HTTP endpoints
   api get               Show one HTTP endpoint
   api create            Create an endpoint from JSON spec
@@ -233,7 +258,8 @@ Example:
 
 	"overview": `usage: apifox-cli overview [--limit N] [--json] [-o FILE]
 
-Export the project once and return endpoint, path, schema, and tag counts with samples.
+Return lightweight design-index and tag counts with bounded samples.
+Exact OpenAPI endpoint, path, and schema counts are included only when schema data is cached.
 Options:
   --limit       Maximum sample items per category, default 10
   --json        Print structured project overview output
@@ -495,11 +521,11 @@ Options:
 Example:
   apifox-cli audit all-responses --tag 订单管理`,
 
-	"audit path-naming": `usage: apifox-cli audit path-naming [--style kebab-case|snake_case|camelCase] [--json] [-o FILE]
+	"audit path-naming": `usage: apifox-cli audit path-naming [--style project|kebab-case|snake_case|camelCase] [--json] [-o FILE]
 
 Check endpoint path naming style.
 Options:
-  --style       Naming style, default kebab-case
+  --style       Naming style, default project (accepts kebab-case and camelCase)
   --json        Print structured {"valid": bool, "issues": [...]} output
   -o, --output  Write output to FILE
 Example:
@@ -528,7 +554,7 @@ Example:
 Validate an endpoint JSON spec locally.
 Options:
   --file    Endpoint spec JSON file, or - for stdin
-  --update  Allow new_path/new_method for update/upsert specs
+  --update  Validate a partial update/upsert spec (path and method plus changed fields)
   --json    Print {"valid": bool, "errors": [...]} and exit 1 when invalid
 Example:
   apifox-cli validate-endpoint --file .apifox-endpoint.json --json`,
@@ -660,9 +686,10 @@ Options:
   --folder-id              Required/repeatable when --scope folders
   --exclude-tag            Repeatable excluded tag
   --exclude-apifox-extensions Omit Apifox extension fields such as x-apifox-folder
+  -o, --output FILE         Write the exported document to FILE
+  --file FILE               Deprecated alias for --output
   --dry-run                Print request preview without calling Apifox
   --print-payload          Alias for --dry-run
-  -o, --output             Write exported spec to FILE
 Example:
   apifox-cli export-openapi --scope tags --tag 订单管理 -o .apifox-orders.json`,
 
@@ -1329,7 +1356,11 @@ func validateEndpointSpec(spec map[string]any, update bool) []string {
 		errors = append(errors, "unknown fields: "+strings.Join(unknown, ", "))
 	}
 
-	for _, field := range []string{"title", "path", "method", "description", "response_schema", "response_example"} {
+	requiredFields := []string{"path", "method"}
+	if !update {
+		requiredFields = []string{"title", "path", "method", "description", "response_schema", "response_example"}
+	}
+	for _, field := range requiredFields {
 		if isEmpty(spec[field]) {
 			errors = append(errors, field+" is required")
 		}
@@ -1343,7 +1374,7 @@ func validateEndpointSpec(spec map[string]any, update bool) []string {
 			break
 		}
 	}
-	if strings.HasPrefix(title, "/") {
+	if title != "" && strings.HasPrefix(title, "/") {
 		errors = append(errors, "title must not be a path")
 	}
 	if strings.Contains(title, "-") || strings.Contains(title, "—") {
@@ -1358,11 +1389,25 @@ func validateEndpointSpec(spec map[string]any, update bool) []string {
 		errors = append(errors, "path must start with '/'")
 	} else {
 		names := pathParamNames(path)
-		if _, exists := spec["path_params"]; exists {
+		_, hasPathParams := spec["path_params"]
+		hasGenericPathParams := false
+		if params, ok := toSlice(spec["parameters"]); ok {
+			for _, rawParam := range params {
+				if param, ok := toMap(rawParam); ok && strings.EqualFold(toString(param["in"]), "path") {
+					hasGenericPathParams = true
+					break
+				}
+			}
+		}
+		if hasPathParams || hasGenericPathParams {
 			declared := map[string]bool{}
-			if params, ok := toSlice(spec["path_params"]); ok {
-				for _, rawParam := range params {
-					if param, ok := toMap(rawParam); ok {
+			for _, field := range []string{"path_params", "parameters"} {
+				if params, ok := toSlice(spec[field]); ok {
+					for _, rawParam := range params {
+						param, ok := toMap(rawParam)
+						if !ok || (field == "parameters" && strings.ToLower(toString(param["in"])) != "path") {
+							continue
+						}
 						name := toString(param["name"])
 						if name != "" {
 							declared[name] = true
@@ -1389,7 +1434,7 @@ func validateEndpointSpec(spec map[string]any, update bool) []string {
 			if len(extra) > 0 {
 				errors = append(errors, "path_params contains names not present in path: "+strings.Join(extra, ", "))
 			}
-		} else if len(names) > 0 {
+		} else if len(names) > 0 && !update {
 			var namesList []string
 			for name := range names {
 				namesList = append(namesList, name)
@@ -1416,23 +1461,23 @@ func validateEndpointSpec(spec map[string]any, update bool) []string {
 	}
 
 	responseSchema, ok := toMap(spec["response_schema"])
-	if !ok {
+	if !ok && !update {
 		errors = append(errors, "response_schema must be an object")
-	} else if missing := checkSchemaDescriptions(responseSchema, ""); len(missing) > 0 {
+	} else if missing := checkSchemaDescriptions(responseSchema, ""); ok && len(missing) > 0 {
 		errors = append(errors, "response_schema fields missing description: "+strings.Join(missing, ", "))
 	}
 
 	responseExample, ok := toMap(spec["response_example"])
-	if !ok {
+	if !ok && !update {
 		errors = append(errors, "response_example must be an object")
-	} else if placeholders := findPlaceholderValues(responseExample, ""); len(placeholders) > 0 {
+	} else if placeholders := findPlaceholderValues(responseExample, ""); ok && len(placeholders) > 0 {
 		if len(placeholders) > 5 {
 			placeholders = placeholders[:5]
 		}
 		errors = append(errors, "response_example contains placeholder values: "+strings.Join(placeholders, ", "))
 	}
 
-	if method == "POST" || method == "PUT" || method == "PATCH" {
+	if !update && (method == "POST" || method == "PUT" || method == "PATCH") {
 		if isEmpty(spec["request_body_schema"]) {
 			errors = append(errors, method+" requires request_body_schema")
 		}
@@ -1461,8 +1506,25 @@ func validateEndpointSpec(spec map[string]any, update bool) []string {
 		}
 	}
 
-	for _, field := range []string{"query_params", "path_params", "header_params"} {
+	for _, field := range []string{"query_params", "path_params", "header_params", "cookie_params", "cookies", "parameters"} {
 		validateParamList(spec, field, &errors)
+	}
+	_, hasCookieParams := spec["cookie_params"]
+	_, hasCookiesAlias := spec["cookies"]
+	if hasCookieParams && hasCookiesAlias {
+		errors = append(errors, "use only one of cookie_params or cookies")
+	}
+	if params, ok := toSlice(spec["parameters"]); ok {
+		for index, rawParam := range params {
+			param, ok := toMap(rawParam)
+			if !ok {
+				continue
+			}
+			location := strings.ToLower(toString(param["in"]))
+			if location != "query" && location != "path" && location != "header" && location != "cookie" {
+				errors = append(errors, fmt.Sprintf("parameters[%d].in must be one of: query, path, header, cookie", index))
+			}
+		}
 	}
 	if raw, exists := spec["tags"]; exists && raw != nil {
 		if _, ok := toSlice(raw); !ok {
@@ -2437,7 +2499,7 @@ Commands:
 		if err != nil {
 			return err
 		}
-		result, err := a.checkPathNaming(optString(opts, "style", "kebab-case"))
+		result, err := a.checkPathNaming(optString(opts, "style", "project"))
 		if err != nil {
 			return err
 		}
@@ -2455,6 +2517,165 @@ Commands:
 	default:
 		return fail(2, "unknown audit command %q", args[0])
 	}
+}
+
+type readSessionRequest struct {
+	ID   string   `json:"id"`
+	Args []string `json:"args"`
+}
+
+type readSessionResponse struct {
+	ID    string `json:"id"`
+	OK    bool   `json:"ok"`
+	Data  any    `json:"data,omitempty"`
+	Error any    `json:"error,omitempty"`
+}
+
+func isReadSessionCommand(args []string) bool {
+	if len(args) >= 1 && args[0] == "overview" {
+		return true
+	}
+	if len(args) < 2 {
+		return false
+	}
+	allowed := map[string]map[string]bool{
+		"config": {"check": true},
+		"api":    {"list": true, "get": true},
+		"schema": {"list": true, "get": true},
+		"tag":    {"list": true, "apis": true},
+		"audit":  {"responses": true, "all-responses": true, "path-naming": true, "consistency": true},
+	}
+	return allowed[args[0]][args[1]]
+}
+
+func (a *App) runReadSessionCommand(args []string) (any, error) {
+	if !isReadSessionCommand(args) {
+		return nil, fail(2, "read-session command is not allowed")
+	}
+	var result commandResult
+	var err error
+	switch args[0] {
+	case "config":
+		result, err = a.checkConfig()
+	case "overview":
+		opts, _, parseErr := parseOptions(args[1:], map[string]bool{"limit": true}, nil)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		limit, parseErr := optInt(opts, "limit", 10)
+		if parseErr != nil || limit < 1 || limit > 100 {
+			return nil, fail(2, "--limit must be between 1 and 100")
+		}
+		result, err = a.projectOverview(limit)
+	case "api":
+		switch args[1] {
+		case "list":
+			opts, _, parseErr := parseOptions(args[2:], map[string]bool{"keyword": true, "limit": true}, nil)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			limit, parseErr := optInt(opts, "limit", 50)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			result, err = a.listAPIEndpoints(optString(opts, "keyword", ""), limit)
+		case "get":
+			opts, _, parseErr := parseOptions(args[2:], map[string]bool{"path": true, "method": true}, nil)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			result, err = a.getEndpointDetail(optString(opts, "path", ""), strings.ToUpper(optString(opts, "method", "")))
+		}
+	case "schema":
+		switch args[1] {
+		case "list":
+			opts, _, parseErr := parseOptions(args[2:], map[string]bool{"keyword": true, "limit": true}, nil)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			limit, parseErr := optInt(opts, "limit", 50)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			result, err = a.listSchemas(optString(opts, "keyword", ""), limit)
+		case "get":
+			opts, pos, parseErr := parseOptions(args[2:], map[string]bool{"name": true}, nil)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			result, err = a.getSchemaDetail(optOrPos(opts, "name", pos, 0))
+		}
+	case "tag":
+		switch args[1] {
+		case "list":
+			result, err = a.listTags()
+		case "apis":
+			opts, pos, parseErr := parseOptions(args[2:], map[string]bool{"tag": true}, nil)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			result, err = a.getAPIsByTag(optOrPos(opts, "tag", pos, 0))
+		}
+	case "audit":
+		switch args[1] {
+		case "responses":
+			opts, _, parseErr := parseOptions(args[2:], map[string]bool{"path": true, "method": true}, nil)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			result, err = a.checkAPIResponses(optString(opts, "path", ""), strings.ToUpper(optString(opts, "method", "")))
+		case "all-responses":
+			opts, _, parseErr := parseOptions(args[2:], map[string]bool{"tag": true}, nil)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			result, err = a.auditAllAPIResponses(optString(opts, "tag", ""), optBool(opts, "show-complete"))
+		case "path-naming":
+			opts, _, parseErr := parseOptions(args[2:], map[string]bool{"style": true}, nil)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			result, err = a.checkPathNaming(optString(opts, "style", "project"))
+		case "consistency":
+			result, err = a.checkResponseConsistency()
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return result.JSON, nil
+}
+
+func (a *App) cmdReadSession(args []string) error {
+	if wantsHelp(args) {
+		fmt.Println("usage: apifox-cli read-session\n\nRead newline-delimited JSON requests from stdin and emit one JSON response per line.")
+		return nil
+	}
+	if len(args) != 0 {
+		return fail(2, "read-session does not accept command-line arguments")
+	}
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetEscapeHTML(false)
+	for scanner.Scan() {
+		var request readSessionRequest
+		if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
+			_ = encoder.Encode(readSessionResponse{OK: false, Error: map[string]any{"code": "INVALID_REQUEST", "message": "request must be valid JSON"}})
+			continue
+		}
+		data, err := a.runReadSessionCommand(request.Args)
+		if err != nil {
+			code := "CLI_FAILED"
+			if ce, ok := err.(commandError); ok && ce.Code == 2 {
+				code = "INVALID_INPUT"
+			}
+			_ = encoder.Encode(readSessionResponse{ID: request.ID, OK: false, Error: map[string]any{"code": code, "message": err.Error()}})
+			continue
+		}
+		_ = encoder.Encode(readSessionResponse{ID: request.ID, OK: true, Data: data})
+	}
+	return scanner.Err()
 }
 
 func (a *App) cmdWriteEndpoint(args []string, action string, helpName string) error {
@@ -2962,7 +3183,7 @@ func buildOpenAPISpec(spec map[string]any, update bool) map[string]any {
 		tags = []any{}
 	}
 
-	components := map[string]any{"ErrorResponse": standardErrorSchema()}
+	components := map[string]any{}
 	var parameters []any
 	for _, pair := range []struct {
 		field    string
@@ -2971,6 +3192,9 @@ func buildOpenAPISpec(spec map[string]any, update bool) map[string]any {
 		{"query_params", "query"},
 		{"path_params", "path"},
 		{"header_params", "header"},
+		{"cookie_params", "cookie"},
+		{"cookies", "cookie"},
+		{"parameters", ""},
 	} {
 		values, ok := toSlice(spec[pair.field])
 		if !ok {
@@ -2981,16 +3205,24 @@ func buildOpenAPISpec(spec map[string]any, update bool) map[string]any {
 			if !ok {
 				continue
 			}
+			location := pair.location
+			if location == "" {
+				location = strings.ToLower(toString(param["in"]))
+			}
 			required := toBool(param["required"], false)
-			if pair.location == "path" {
+			if location == "path" {
 				required = true
+			}
+			paramSchema := map[string]any{"type": defaultString(toString(param["type"]), "string")}
+			if schema, ok := toMap(param["schema"]); ok {
+				paramSchema = schema
 			}
 			item := map[string]any{
 				"name":        toString(param["name"]),
-				"in":          pair.location,
+				"in":          location,
 				"required":    required,
 				"description": toString(param["description"]),
-				"schema":      map[string]any{"type": defaultString(toString(param["type"]), "string")},
+				"schema":      paramSchema,
 			}
 			if example, exists := param["example"]; exists {
 				item["example"] = example
@@ -2999,11 +3231,16 @@ func buildOpenAPISpec(spec map[string]any, update bool) map[string]any {
 		}
 	}
 
-	operation := map[string]any{
-		"summary":     title,
-		"description": description,
-		"operationId": strings.ToLower(strings.ReplaceAll(title, " ", "_")),
-		"tags":        tags,
+	operation := map[string]any{}
+	if _, exists := spec["title"]; exists {
+		operation["summary"] = title
+		operation["operationId"] = strings.ToLower(strings.ReplaceAll(title, " ", "_"))
+	}
+	if _, exists := spec["description"]; exists {
+		operation["description"] = description
+	}
+	if _, exists := spec["tags"]; exists {
+		operation["tags"] = tags
 	}
 	if len(parameters) > 0 {
 		operation["parameters"] = parameters
@@ -3015,8 +3252,12 @@ func buildOpenAPISpec(spec map[string]any, update bool) map[string]any {
 		content := map[string]any{"application/json": map[string]any{}}
 		jsonContent := content["application/json"].(map[string]any)
 		if schema, ok := toMap(spec["request_body_schema"]); ok {
-			components[reqSchemaName] = schema
-			jsonContent["schema"] = map[string]any{"$ref": "#/components/schemas/" + reqSchemaName}
+			if update {
+				jsonContent["schema"] = schema
+			} else {
+				components[reqSchemaName] = schema
+				jsonContent["schema"] = map[string]any{"$ref": "#/components/schemas/" + reqSchemaName}
+			}
 		}
 		if example, exists := spec["request_body_example"]; exists {
 			jsonContent["example"] = example
@@ -3026,10 +3267,20 @@ func buildOpenAPISpec(spec map[string]any, update bool) map[string]any {
 
 	methodForErrors := method
 	responses := map[string]any{}
-	responseItems := autoFillErrorResponses(spec["responses"], methodForErrors)
+	_, hasResponseSchema := spec["response_schema"]
+	_, hasResponseExample := spec["response_example"]
+	_, hasResponsesField := spec["responses"]
+	hasResponses := !update || hasResponsesField
+	responseItems := []any{}
+	if hasResponses {
+		responseItems = autoFillErrorResponses(spec["responses"], methodForErrors)
+		components["ErrorResponse"] = standardErrorSchema()
+	}
 	success := map[string]any{"code": 200, "name": "成功", "schema": spec["response_schema"], "example": spec["response_example"]}
 	var finalResponses []any
-	finalResponses = append(finalResponses, success)
+	if hasResponseSchema || hasResponseExample {
+		finalResponses = append(finalResponses, success)
+	}
 	for _, raw := range responseItems {
 		if resp, ok := toMap(raw); ok && toInt(resp["code"], 0) != 200 {
 			finalResponses = append(finalResponses, resp)
@@ -3049,6 +3300,8 @@ func buildOpenAPISpec(spec map[string]any, update bool) map[string]any {
 			if schema, ok := toMap(resp["schema"]); ok {
 				if codeInt >= 400 {
 					jsonContent["schema"] = map[string]any{"$ref": "#/components/schemas/ErrorResponse"}
+				} else if update {
+					jsonContent["schema"] = schema
 				} else {
 					respSchemaName := generateSchemaName(path, method, "Response", "")
 					components[respSchemaName] = schema
@@ -3062,7 +3315,9 @@ func buildOpenAPISpec(spec map[string]any, update bool) map[string]any {
 		}
 		responses[code] = respObj
 	}
-	operation["responses"] = responses
+	if len(responses) > 0 {
+		operation["responses"] = responses
+	}
 
 	return map[string]any{
 		"openapi": "3.0.0",
@@ -3123,11 +3378,11 @@ func (a *App) applyEndpoint(spec map[string]any, action string) (commandResult, 
 		}
 	}
 	openapi := buildOpenAPISpec(spec, update)
-	behavior := "OVERWRITE_EXISTING"
+	behavior := "AUTO_MERGE"
 	if action == "create" {
 		behavior = "CREATE_NEW"
 	}
-	result, err := a.importOpenAPI(openapi, behavior, "OVERWRITE_EXISTING", toInt(spec["folder_id"], 0))
+	result, err := a.importOpenAPI(openapi, behavior, "AUTO_MERGE", toInt(spec["folder_id"], 0))
 	if err != nil {
 		return commandResult{}, err
 	}
@@ -3144,15 +3399,17 @@ func (a *App) applyEndpoint(spec map[string]any, action string) (commandResult, 
 	return commandResult{
 		Text: text,
 		JSON: map[string]any{
-			"kind":          "endpoint",
-			"action":        action,
-			"title":         toString(spec["title"]),
-			"method":        finalMethod,
-			"path":          finalPath,
-			"created":       counters["endpointCreated"],
-			"updated":       counters["endpointUpdated"],
-			"counters":      counters,
-			"import_result": result,
+			"kind":                          "endpoint",
+			"action":                        action,
+			"title":                         toString(spec["title"]),
+			"method":                        finalMethod,
+			"path":                          finalPath,
+			"created":                       counters["endpointCreated"],
+			"updated":                       counters["endpointUpdated"],
+			"counters":                      counters,
+			"import_result":                 result,
+			"persistence_verified":          false,
+			"read_back_verification_needed": true,
 		},
 	}, nil
 }
@@ -3244,6 +3501,9 @@ func (a *App) exportOpenAPIMap(addFoldersToTags bool, includeExtensions bool) (m
 	if err := a.requireConfig(); err != nil {
 		return nil, err
 	}
+	if !addFoldersToTags && includeExtensions && a.openAPICache != nil && time.Since(a.openAPICacheAt) < a.ReadCacheTTL {
+		return a.openAPICache, nil
+	}
 	payload := map[string]any{
 		"scope":        map[string]any{"type": "ALL"},
 		"options":      map[string]any{"includeApifoxExtensionProperties": includeExtensions, "addFoldersToTags": addFoldersToTags},
@@ -3258,6 +3518,10 @@ func (a *App) exportOpenAPIMap(addFoldersToTags bool, includeExtensions bool) (m
 	obj, ok := toMap(result)
 	if !ok {
 		return nil, fail(1, "Apifox export did not return a JSON object")
+	}
+	if !addFoldersToTags && includeExtensions {
+		a.openAPICache = obj
+		a.openAPICacheAt = time.Now()
 	}
 	return obj, nil
 }
@@ -3524,8 +3788,8 @@ func (a *App) cmdExportOpenAPI(args []string) error {
 	if wantsHelp(args) {
 		return commandHelp("export-openapi")
 	}
-	valueFlags := map[string]bool{"format": true, "oas-version": true, "scope": true, "endpoint-id": true, "tag": true, "folder-id": true, "exclude-tag": true, "environment-id": true, "branch-id": true, "module-id": true, "output": true, "locale": true}
-	opts, _, err := parseOptions(args, valueFlags, map[string]string{"o": "output"})
+	valueFlags := map[string]bool{"format": true, "oas-version": true, "scope": true, "endpoint-id": true, "tag": true, "folder-id": true, "exclude-tag": true, "environment-id": true, "branch-id": true, "module-id": true, "output": true, "file": true, "locale": true}
+	opts, _, err := parseOptions(args, valueFlags, map[string]string{"o": "output", "file": "output"})
 	if err != nil {
 		return err
 	}
@@ -3896,7 +4160,7 @@ func (a *App) checkConfig() (commandResult, error) {
 			},
 		}, fail(2, message)
 	}
-	openapi, err := a.exportOpenAPIMap(false, false)
+	records, err := a.listHTTPAPIRecords()
 	if err != nil {
 		message := "API 连接失败: " + err.Error()
 		lines = append(lines, "", message)
@@ -3913,46 +4177,59 @@ func (a *App) checkConfig() (commandResult, error) {
 			},
 		}, fail(1, message)
 	}
-	info, _ := toMap(openapi["info"])
-	paths, _ := toMap(openapi["paths"])
-	components, _ := toMap(openapi["components"])
-	schemas, _ := toMap(components["schemas"])
-	endpointCount := len(collectAPIEndpointInfos(openapi, ""))
-	lines = append(lines, "", "API 连接成功", "文档标题: "+defaultString(toString(info["title"]), "未知文档"), fmt.Sprintf("接口数量: %d 个", endpointCount), fmt.Sprintf("路径数量: %d 个", len(paths)), fmt.Sprintf("数据模型: %d 个", len(schemas)))
+	pathSet := map[string]bool{}
+	for _, record := range records {
+		pathSet[record.Path] = true
+	}
+	lines = append(lines, "", "API 连接成功", fmt.Sprintf("接口数量: %d 个", len(records)), fmt.Sprintf("路径数量: %d 个", len(pathSet)))
 	return commandResult{
 		Text: strings.Join(lines, "\n"),
 		JSON: map[string]any{
 			"configured":     true,
 			"connected":      true,
 			"project_id":     a.Config.ProjectID,
-			"document_title": defaultString(toString(info["title"]), "未知文档"),
-			"endpoint_count": endpointCount,
-			"path_count":     len(paths),
-			"schema_count":   len(schemas),
+			"check_scope":    "connectivity",
+			"endpoint_count": len(records),
+			"path_count":     len(pathSet),
 		},
 	}, nil
 }
 
 func (a *App) projectOverview(limit int) (commandResult, error) {
-	openapi, err := a.exportOpenAPIMap(false, true)
+	records, err := a.listHTTPAPIRecords()
 	if err != nil {
 		return commandResult{}, err
 	}
-	info, _ := toMap(openapi["info"])
-	paths, _ := toMap(openapi["paths"])
-	endpoints := collectAPIEndpointInfos(openapi, "")
-	endpointSamples := limitedEndpoints(endpoints, limit)
-	schemas := collectSchemaInfos(openapi, "")
-	schemaSamples := schemas
-	if len(schemaSamples) > limit {
-		schemaSamples = schemaSamples[:limit]
+	pathSet := map[string]bool{}
+	for _, record := range records {
+		pathSet[record.Path] = true
 	}
-	tags := collectTagInfos(openapi)
+	info := map[string]any{}
+	schemas := []schemaInfo{}
+	openAPIDataLoaded := a.openAPICache != nil && time.Since(a.openAPICacheAt) < a.ReadCacheTTL
+	var endpointCount any
+	var pathCount any
+	var schemaCount any
+	if openAPIDataLoaded {
+		info, _ = toMap(a.openAPICache["info"])
+		schemas = collectSchemaInfos(a.openAPICache, "")
+		openAPIPaths, _ := toMap(a.openAPICache["paths"])
+		endpointCount = len(collectAPIEndpointInfos(a.openAPICache, ""))
+		pathCount = len(openAPIPaths)
+		schemaCount = len(schemas)
+	}
+	endpoints := endpointInfosFromRecords(records, "")
+	endpointSamples := limitedEndpoints(endpoints, limit)
+	tags := collectTagInfosFromRecords(records)
 	tagSamples := tags
 	if len(tagSamples) > limit {
 		tagSamples = tagSamples[:limit]
 	}
 	endpointPayload := endpointListJSON(endpoints, endpointSamples, "", limit)
+	schemaSamples := schemas
+	if len(schemaSamples) > limit {
+		schemaSamples = schemaSamples[:limit]
+	}
 	schemaPayload := schemaListJSON(schemas, schemaSamples, "", limit)
 	tagPayload := tagsJSON("tags", tagSamples)
 	title := defaultString(toString(info["title"]), "未知文档")
@@ -3960,9 +4237,14 @@ func (a *App) projectOverview(limit int) (commandResult, error) {
 		"Apifox 项目概览",
 		strings.Repeat("=", 40),
 		"文档标题: " + title,
-		fmt.Sprintf("接口数量: %d 个", len(endpoints)),
-		fmt.Sprintf("路径数量: %d 个", len(paths)),
-		fmt.Sprintf("数据模型: %d 个", len(schemas)),
+		fmt.Sprintf("设计记录数量: %d 个", len(endpoints)),
+		fmt.Sprintf("设计路径数量: %d 个", len(pathSet)),
+		"数据模型: " + func() string {
+			if openAPIDataLoaded {
+				return fmt.Sprintf("%d 个（已缓存）", len(schemas))
+			}
+			return "未加载（调用 schema list/get 后可获得精确数量）"
+		}(),
 		fmt.Sprintf("标签数量: %d 个", len(tags)),
 	}, "\n")
 	return commandResult{
@@ -3971,11 +4253,23 @@ func (a *App) projectOverview(limit int) (commandResult, error) {
 			"project_id":     a.Config.ProjectID,
 			"document_title": title,
 			"counts": map[string]any{
-				"endpoints": len(endpoints),
-				"paths":     len(paths),
-				"schemas":   len(schemas),
-				"tags":      len(tags),
+				"endpoints":      endpointCount,
+				"paths":          pathCount,
+				"schemas":        schemaCount,
+				"design_records": len(endpoints),
+				"design_paths":   len(pathSet),
+				"tags":           len(tags),
 			},
+			"count_source": map[string]any{
+				"endpoints":      "openapi_cache",
+				"paths":          "openapi_cache",
+				"schemas":        "openapi_cache",
+				"design_records": "design_index",
+				"design_paths":   "design_index",
+				"tags":           "design_index",
+			},
+			"openapi_data_loaded": openAPIDataLoaded,
+			"schema_data_loaded":  openAPIDataLoaded,
 			"samples": map[string]any{
 				"endpoints": endpointPayload["endpoints"],
 				"schemas":   schemaPayload["schemas"],
@@ -3997,13 +4291,16 @@ type endpointInfo struct {
 }
 
 func endpointInfoJSON(api endpointInfo, includeOperation bool) map[string]any {
+	tags := api.Tags
+	if tags == nil {
+		tags = []string{}
+	}
 	item := map[string]any{
 		"method":       api.Method,
 		"path":         api.Path,
 		"title":        api.Title,
 		"operation_id": api.OperationID,
-		"description":  api.Description,
-		"tags":         api.Tags,
+		"tags":         tags,
 	}
 	if includeOperation {
 		item["operation"] = api.Operation
@@ -4041,6 +4338,29 @@ func collectAPIEndpointInfos(openapi map[string]any, keyword string) []endpointI
 				Operation:   op,
 			})
 		}
+	}
+	sort.Slice(apis, func(i, j int) bool {
+		if apis[i].Path == apis[j].Path {
+			return apis[i].Method < apis[j].Method
+		}
+		return apis[i].Path < apis[j].Path
+	})
+	return apis
+}
+
+func endpointInfosFromRecords(records []httpAPIRecord, keyword string) []endpointInfo {
+	normalizedKeyword := strings.ToLower(strings.TrimSpace(keyword))
+	apis := make([]endpointInfo, 0, len(records))
+	for _, record := range records {
+		if normalizedKeyword != "" && !strings.Contains(strings.ToLower(record.Name+" "+record.Path), normalizedKeyword) {
+			continue
+		}
+		apis = append(apis, endpointInfo{
+			Method: record.Method,
+			Path:   record.Path,
+			Title:  defaultString(record.Name, "未命名"),
+			Tags:   record.Tags,
+		})
 	}
 	sort.Slice(apis, func(i, j int) bool {
 		if apis[i].Path == apis[j].Path {
@@ -4095,14 +4415,14 @@ func formatEndpointList(apis []endpointInfo, returned []endpointInfo) string {
 }
 
 func (a *App) listAPIEndpoints(keyword string, limit int) (commandResult, error) {
-	openapi, err := a.exportOpenAPIMap(false, true)
+	records, err := a.listHTTPAPIRecords()
 	if err != nil {
 		return commandResult{}, err
 	}
 	if limit <= 0 {
 		limit = 50
 	}
-	apis := collectAPIEndpointInfos(openapi, keyword)
+	apis := endpointInfosFromRecords(records, keyword)
 	returned := limitedEndpoints(apis, limit)
 	return commandResult{Text: formatEndpointList(apis, returned), JSON: endpointListJSON(apis, returned, keyword, limit)}, nil
 }
@@ -4137,6 +4457,181 @@ func endpointDetailJSON(path string, method string, op map[string]any) map[strin
 		"responses":   responseItems,
 		"operation":   op,
 	}
+}
+
+func designParameter(raw any, location string) map[string]any {
+	param, _ := toMap(raw)
+	result := map[string]any{
+		"name":        toString(param["name"]),
+		"in":          location,
+		"required":    toBool(param["required"], false) || location == "path",
+		"description": toString(param["description"]),
+	}
+	if schema, ok := toMap(param["schema"]); ok {
+		result["schema"] = schema
+	} else {
+		result["schema"] = map[string]any{"type": defaultString(toString(param["type"]), "string")}
+	}
+	for _, key := range []string{"example", "examples"} {
+		if value, exists := param[key]; exists {
+			result[key] = value
+		}
+	}
+	return result
+}
+
+func designExamples(raw any) map[string]any {
+	examples := map[string]any{}
+	for index, example := range objectItems(raw, "items", "list", "examples", "data") {
+		key := defaultString(toString(example["oasKey"]), toString(example["name"]))
+		key = defaultString(key, toString(example["id"]))
+		key = defaultString(key, fmt.Sprintf("example-%d", index+1))
+		value := example["data"]
+		if text, ok := value.(string); ok {
+			var decoded any
+			if json.Unmarshal([]byte(text), &decoded) == nil {
+				value = decoded
+			}
+		}
+		examples[key] = map[string]any{
+			"summary":     toString(example["name"]),
+			"description": toString(example["description"]),
+			"value":       value,
+		}
+	}
+	return examples
+}
+
+func designEndpointOperation(record httpAPIRecord) map[string]any {
+	detail := record.Detail
+	operation := map[string]any{
+		"summary":     defaultString(record.Name, toString(detail["name"])),
+		"description": toString(detail["description"]),
+		"operationId": toString(detail["operationId"]),
+		"tags":        record.Tags,
+	}
+	var parameters []any
+	if grouped, ok := toMap(detail["parameters"]); ok {
+		for _, location := range []string{"query", "path", "header", "cookie"} {
+			if values, ok := toSlice(grouped[location]); ok {
+				for _, value := range values {
+					parameters = append(parameters, designParameter(value, location))
+				}
+			}
+		}
+	}
+	if common, ok := toMap(detail["commonParameters"]); ok {
+		for _, location := range []string{"query", "path", "header", "cookie"} {
+			if values, ok := toSlice(common[location]); ok {
+				for _, value := range values {
+					parameters = append(parameters, designParameter(value, location))
+				}
+			}
+		}
+	}
+	if parameters == nil {
+		parameters = []any{}
+	}
+	operation["parameters"] = parameters
+
+	if body, ok := toMap(detail["requestBody"]); ok && toString(body["type"]) != "" && toString(body["type"]) != "none" {
+		contentType := defaultString(toString(body["type"]), "application/json")
+		if contentType == "json" {
+			contentType = "application/json"
+		}
+		media := map[string]any{}
+		if schema, ok := toMap(body["jsonSchema"]); ok && len(schema) > 0 {
+			media["schema"] = schema
+		} else if schema, ok := toMap(body["itemSchema"]); ok && len(schema) > 0 {
+			media["schema"] = schema
+		} else if values, ok := toSlice(body["parameters"]); ok && len(values) > 0 {
+			properties := map[string]any{}
+			var required []any
+			for _, rawParam := range values {
+				param, _ := toMap(rawParam)
+				name := toString(param["name"])
+				if name == "" {
+					continue
+				}
+				if schema, ok := toMap(param["schema"]); ok {
+					properties[name] = schema
+				} else {
+					properties[name] = map[string]any{"type": defaultString(toString(param["type"]), "string")}
+				}
+				if toBool(param["required"], false) {
+					required = append(required, name)
+				}
+			}
+			media["schema"] = map[string]any{"type": "object", "properties": properties, "required": required}
+		}
+		if value, exists := body["example"]; exists {
+			media["example"] = value
+		}
+		if examples := designExamples(body["examples"]); len(examples) > 0 {
+			media["examples"] = examples
+		}
+		operation["requestBody"] = map[string]any{
+			"required": toBool(body["required"], false),
+			"content":  map[string]any{contentType: media},
+		}
+	}
+
+	responseExamples := map[string]map[string]any{}
+	for _, rawExample := range objectItems(detail["responseExamples"], "items", "list", "examples", "data") {
+		responseID := toString(rawExample["responseId"])
+		if responseID == "" {
+			continue
+		}
+		if responseExamples[responseID] == nil {
+			responseExamples[responseID] = map[string]any{}
+		}
+		for key, example := range designExamples([]any{rawExample}) {
+			responseExamples[responseID][key] = example
+		}
+	}
+	responses := map[string]any{}
+	if values, ok := toSlice(detail["responses"]); ok {
+		for _, rawResponse := range values {
+			response, _ := toMap(rawResponse)
+			code := toString(response["code"])
+			if code == "" {
+				continue
+			}
+			item := map[string]any{"description": toString(response["description"])}
+			contentType := defaultString(toString(response["contentType"]), toString(response["mediaType"]))
+			if contentType != "" {
+				media := map[string]any{}
+				if schema, ok := toMap(response["jsonSchema"]); ok && len(schema) > 0 {
+					media["schema"] = schema
+				} else if schema, ok := toMap(response["itemSchema"]); ok && len(schema) > 0 {
+					media["schema"] = schema
+				}
+				if examples := responseExamples[toString(response["id"])]; len(examples) > 0 {
+					media["examples"] = examples
+				}
+				item["content"] = map[string]any{contentType: media}
+			}
+			if headers, ok := toSlice(response["headers"]); ok && len(headers) > 0 {
+				item["headers"] = headers
+			}
+			responses[code] = item
+		}
+	}
+	operation["responses"] = responses
+	return operation
+}
+
+func endpointPathsFromRecords(records []httpAPIRecord) map[string]any {
+	paths := make(map[string]any)
+	for _, record := range records {
+		methods, _ := toMap(paths[record.Path])
+		if methods == nil {
+			methods = make(map[string]any)
+			paths[record.Path] = methods
+		}
+		methods[strings.ToLower(record.Method)] = designEndpointOperation(record)
+	}
+	return paths
 }
 
 func formatEndpointDetail(path string, method string, op map[string]any) string {
@@ -4190,21 +4685,20 @@ func (a *App) getEndpointDetail(path string, method string) (commandResult, erro
 	if path == "" || method == "" {
 		return commandResult{}, fail(2, "path and method are required")
 	}
-	openapi, err := a.exportOpenAPIMap(false, true)
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	method = strings.ToUpper(method)
+	records, err := a.listHTTPAPIRecords()
 	if err != nil {
 		return commandResult{}, err
 	}
-	paths, _ := toMap(openapi["paths"])
-	pathItem, ok := toMap(paths[path])
-	if !ok {
-		message := "未找到路径为 " + path + " 的接口"
-		return notFoundResult(message, map[string]any{"method": strings.ToUpper(method), "path": path}), nil
+	record, findErr := findHTTPAPI(records, method, path)
+	if findErr != nil {
+		message := "未找到 " + method + " " + path + " 接口"
+		return notFoundResult(message, map[string]any{"method": method, "path": path}), nil
 	}
-	op, ok := toMap(pathItem[strings.ToLower(method)])
-	if !ok {
-		message := "未找到 " + strings.ToUpper(method) + " " + path + " 接口"
-		return notFoundResult(message, map[string]any{"method": strings.ToUpper(method), "path": path}), nil
-	}
+	op := designEndpointOperation(record)
 	return commandResult{Text: formatEndpointDetail(path, method, op), JSON: endpointDetailJSON(path, method, op)}, nil
 }
 
@@ -4234,8 +4728,24 @@ func collectSchemaInfos(openapi map[string]any, keyword string) []schemaInfo {
 			Schema:        schema,
 		})
 	}
-	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
+	sort.Slice(infos, func(i, j int) bool {
+		leftNoise := isNoisySchemaName(infos[i].Name)
+		rightNoise := isNoisySchemaName(infos[j].Name)
+		if leftNoise != rightNoise {
+			return !leftNoise
+		}
+		return strings.ToLower(infos[i].Name) < strings.ToLower(infos[j].Name)
+	})
 	return infos
+}
+
+func isNoisySchemaName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return true
+	}
+	_, err := strconv.ParseFloat(name, 64)
+	return err == nil
 }
 
 func schemaListJSON(schemas []schemaInfo, returned []schemaInfo, keyword string, limit int) map[string]any {
@@ -4244,7 +4754,6 @@ func schemaListJSON(schemas []schemaInfo, returned []schemaInfo, keyword string,
 		items = append(items, map[string]any{
 			"name":           schema.Name,
 			"type":           schema.Type,
-			"description":    schema.Description,
 			"property_count": schema.PropertyCount,
 		})
 	}
@@ -4404,11 +4913,11 @@ func formatTags(title string, tags []tagInfo) string {
 }
 
 func (a *App) listTags() (commandResult, error) {
-	openapi, err := a.exportOpenAPIMap(false, true)
+	records, err := a.listHTTPAPIRecords()
 	if err != nil {
 		return commandResult{}, err
 	}
-	tags := collectTagInfos(openapi)
+	tags := collectTagInfosFromRecords(records)
 	return commandResult{Text: formatTags("标签列表", tags), JSON: tagsJSON("tags", tags)}, nil
 }
 
@@ -4425,13 +4934,14 @@ func (a *App) getAPIsByTag(tag string) (commandResult, error) {
 	if tag == "" {
 		return commandResult{}, fail(2, "tag is required")
 	}
-	openapi, err := a.exportOpenAPIMap(false, true)
+	records, err := a.listHTTPAPIRecords()
 	if err != nil {
 		return commandResult{}, err
 	}
 	var endpoints []endpointInfo
-	for _, api := range collectAPIEndpointInfos(openapi, "") {
-		if hasTag(api, tag) {
+	for _, record := range records {
+		api := endpointInfo{Method: record.Method, Path: record.Path, Title: defaultString(record.Name, "未命名"), Tags: record.Tags}
+		if hasTag(api, tag) || (tag == "未分类" && len(record.Tags) == 0) {
 			endpoints = append(endpoints, api)
 		}
 	}
@@ -4447,6 +4957,30 @@ func (a *App) getAPIsByTag(tag string) (commandResult, error) {
 	}
 	text := strings.Join(append([]string{"标签: " + tag, fmt.Sprintf("接口列表 (共 %d 个)", len(lines)), strings.Repeat("=", 70)}, lines...), "\n")
 	return commandResult{Text: text, JSON: map[string]any{"tag": tag, "endpoints": items, "total": len(items)}}, nil
+}
+
+func collectTagInfosFromRecords(records []httpAPIRecord) []tagInfo {
+	counts := map[string]int{}
+	for _, record := range records {
+		if len(record.Tags) == 0 {
+			counts["未分类"]++
+			continue
+		}
+		for _, tag := range record.Tags {
+			counts[tag]++
+		}
+	}
+	tags := make([]tagInfo, 0, len(counts))
+	for name, count := range counts {
+		tags = append(tags, tagInfo{Name: name, EndpointCount: count})
+	}
+	sort.Slice(tags, func(i, j int) bool {
+		if tags[i].EndpointCount == tags[j].EndpointCount {
+			return tags[i].Name < tags[j].Name
+		}
+		return tags[i].EndpointCount > tags[j].EndpointCount
+	})
+	return tags
 }
 
 func (a *App) deleteEndpoint(path string, method string, confirm bool) (string, error) {
@@ -4519,21 +5053,22 @@ func sortEndpointItems(items []map[string]any) {
 }
 
 func (a *App) checkAPIResponses(path string, method string) (commandResult, error) {
-	openapi, err := a.exportOpenAPIMap(false, true)
+	if path == "" || method == "" {
+		return commandResult{}, fail(2, "path and method are required")
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	method = strings.ToUpper(method)
+	records, err := a.listHTTPAPIRecords()
 	if err != nil {
 		return commandResult{}, err
 	}
-	paths, _ := toMap(openapi["paths"])
-	pathItem, ok := toMap(paths[path])
-	if !ok {
-		message := "未找到路径为 " + path + " 的接口"
-		return notFoundResult(message, map[string]any{"method": strings.ToUpper(method), "path": path}), nil
+	record, findErr := findHTTPAPI(records, method, path)
+	if findErr != nil {
+		return notFoundResult("未找到 "+method+" "+path+" 接口", map[string]any{"method": method, "path": path}), nil
 	}
-	op, ok := toMap(pathItem[strings.ToLower(method)])
-	if !ok {
-		message := "未找到 " + strings.ToUpper(method) + " " + path + " 接口"
-		return notFoundResult(message, map[string]any{"method": strings.ToUpper(method), "path": path}), nil
-	}
+	op := designEndpointOperation(record)
 	problems := responseProblems(op, strings.ToLower(method))
 	payload := map[string]any{
 		"found":    true,
@@ -4550,11 +5085,11 @@ func (a *App) checkAPIResponses(path string, method string) (commandResult, erro
 }
 
 func (a *App) auditAllAPIResponses(tag string, showComplete bool) (commandResult, error) {
-	openapi, err := a.exportOpenAPIMap(false, true)
+	records, err := a.listHTTPAPIRecords()
 	if err != nil {
 		return commandResult{}, err
 	}
-	paths, _ := toMap(openapi["paths"])
+	paths := endpointPathsFromRecords(records)
 	var problemLines, completeLines []string
 	var problemItems, completeItems []map[string]any
 	for path, rawMethods := range paths {
@@ -4621,19 +5156,22 @@ func (a *App) auditAllAPIResponses(tag string, showComplete bool) (commandResult
 }
 
 func (a *App) checkPathNaming(style string) (commandResult, error) {
-	openapi, err := a.exportOpenAPIMap(false, true)
+	records, err := a.listHTTPAPIRecords()
 	if err != nil {
 		return commandResult{}, err
 	}
-	paths, _ := toMap(openapi["paths"])
-	var bad []string
-	for path := range paths {
+	paths := endpointPathsFromRecords(records)
+	var issues []map[string]any
+	for path, rawMethods := range paths {
+		methods, _ := toMap(rawMethods)
 		for _, segment := range strings.Split(path, "/") {
 			if segment == "" || strings.HasPrefix(segment, "{") {
 				continue
 			}
 			ok := true
 			switch style {
+			case "project":
+				ok = kebabSegmentRE.MatchString(segment) || camelSegmentRE.MatchString(segment)
 			case "kebab-case":
 				ok = kebabSegmentRE.MatchString(segment)
 			case "snake_case":
@@ -4644,29 +5182,85 @@ func (a *App) checkPathNaming(style string) (commandResult, error) {
 				return commandResult{}, fail(2, "unsupported style: %s", style)
 			}
 			if !ok {
-				bad = append(bad, path)
+				for method, rawOp := range methods {
+					if !httpMethods[strings.ToUpper(method)] {
+						continue
+					}
+					op, _ := toMap(rawOp)
+					issues = append(issues, map[string]any{
+						"method":     strings.ToUpper(method),
+						"path":       path,
+						"title":      defaultString(toString(op["summary"]), "未命名"),
+						"segment":    segment,
+						"expected":   expectedPathSegment(segment, style),
+						"rule":       pathNamingRule(style),
+						"suggestion": "将路径段 " + segment + " 调整为 " + expectedPathSegment(segment, style),
+					})
+				}
 				break
 			}
 		}
 	}
-	sort.Strings(bad)
-	issues := make([]map[string]any, 0, len(bad))
-	for _, path := range bad {
-		issues = append(issues, map[string]any{"path": path})
-	}
-	payload := map[string]any{"style": style, "valid": len(bad) == 0, "issues": issues, "issue_count": len(issues)}
-	if len(bad) == 0 {
+	sortEndpointItems(issues)
+	payload := map[string]any{"style": style, "rule": pathNamingRule(style), "valid": len(issues) == 0, "issues": issues, "issue_count": len(issues)}
+	if len(issues) == 0 {
 		return commandResult{Text: "所有路径符合 " + style + " 命名规范", JSON: payload}, nil
 	}
-	return commandResult{Text: fmt.Sprintf("发现 %d 个路径不符合 %s:\n- %s", len(bad), style, strings.Join(bad, "\n- ")), JSON: payload}, nil
+	return commandResult{Text: fmt.Sprintf("发现 %d 个接口路径不符合 %s", len(issues), style), JSON: payload}, nil
+}
+
+func pathNamingRule(style string) string {
+	switch style {
+	case "project":
+		return "静态路径段使用 kebab-case 或 Java 风格 camelCase"
+	case "kebab-case":
+		return "静态路径段仅使用小写字母、数字和连字符"
+	case "snake_case":
+		return "静态路径段仅使用小写字母、数字和下划线"
+	case "camelCase":
+		return "静态路径段使用小驼峰"
+	default:
+		return style
+	}
+}
+
+func splitPathWords(segment string) []string {
+	value := acronymBoundaryRE.ReplaceAllString(segment, "${1}-${2}")
+	value = camelBoundaryRE.ReplaceAllString(value, "${1}-${2}")
+	value = strings.ReplaceAll(value, "_", "-")
+	var words []string
+	for _, word := range strings.Split(value, "-") {
+		if word != "" {
+			words = append(words, strings.ToLower(word))
+		}
+	}
+	return words
+}
+
+func expectedPathSegment(segment string, style string) string {
+	words := splitPathWords(segment)
+	if len(words) == 0 {
+		return segment
+	}
+	switch style {
+	case "snake_case":
+		return strings.Join(words, "_")
+	case "camelCase", "project":
+		for index := 1; index < len(words); index++ {
+			words[index] = strings.ToUpper(words[index][:1]) + words[index][1:]
+		}
+		return strings.Join(words, "")
+	default:
+		return strings.Join(words, "-")
+	}
 }
 
 func (a *App) checkResponseConsistency() (commandResult, error) {
-	openapi, err := a.exportOpenAPIMap(false, true)
+	records, err := a.listHTTPAPIRecords()
 	if err != nil {
 		return commandResult{}, err
 	}
-	paths, _ := toMap(openapi["paths"])
+	paths := endpointPathsFromRecords(records)
 	var missing []string
 	var issues []map[string]any
 	for path, rawMethods := range paths {
